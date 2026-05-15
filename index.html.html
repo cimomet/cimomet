@@ -2554,7 +2554,11 @@ function renderModal(){
       <div class="modal-title">Cambiar rol</div>
       <div class="modal-sub">Elegí el rol con el que querés acceder a la aplicación.</div>
       <div class="modal-field"><label>Rol</label>
-        <select id="sel-role" style="width:100%;padding:10px 12px;font-size:14px">${opts}</select>
+        <select id="sel-role" style="width:100%;padding:10px 12px;font-size:14px" onchange="document.getElementById('admin-pw-field').style.display=this.value==='admin'?'block':'none'">${opts}</select>
+      </div>
+      <div class="modal-field" id="admin-pw-field" style="display:${currentRole==='admin'?'block':'none'}">
+        <label>Contraseña Admin</label>
+        <input id="inp-admin-pw" type="password" placeholder="Ingresá la contraseña"/>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-cancel" id="btn-close">Cancelar</button>
@@ -3243,6 +3247,25 @@ function bind(){
     render();
   });
 
+  // show/hide admin pw field when role changes
+  const selRole=document.getElementById('sel-role');
+  if(selRole){
+    selRole.addEventListener('change',()=>{
+      const field=document.getElementById('admin-pw-field');
+      if(field) field.style.display=selRole.value==='admin'?'block':'none';
+      if(selRole.value!=='admin'){
+        const inp=document.getElementById('inp-admin-pw');
+        if(inp) inp.value='';
+      }
+    });
+  }
+  const adminPwInput=document.getElementById('inp-admin-pw');
+  if(adminPwInput){
+    adminPwInput.addEventListener('keydown',e=>{
+      if(e.key==='Enter') document.getElementById('btn-role-confirm')?.click();
+    });
+  }
+
   // inspector session
   on('btn-inspectores','click',()=>{
     state.modal={type:'inspectores-admin'};
@@ -3344,11 +3367,14 @@ function bind(){
   on('btn-role-confirm','click',()=>{
     const newRole=document.getElementById('sel-role')?.value;
     if(newRole){
+      if(newRole==='admin'){
+        const pw=document.getElementById('inp-admin-pw')?.value||'';
+        if(pw!=='CIMOMET'){ alert('Contraseña incorrecta.'); return; }
+      }
       state.role=newRole;
       state.view='home';
       state.activeOtId=null;
       savePrefs();
-      // always ask for inspector login when switching to calidad
       if(newRole==='calidad'){
         state.modal={type:'inspector-login'};
         render(); return;
