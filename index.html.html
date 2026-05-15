@@ -2631,7 +2631,9 @@ function renderModal(){
           <div style="padding:8px 12px;background:var(--bg3);border-radius:var(--r);font-family:var(--mono);font-size:13px;color:var(--green)">👤 ${esc(state.inspectorActivo.nombre)}</div>
          </div>`
       : `<div class="modal-field"><label>Inspector</label>
-          <input id="inp-author" type="text" placeholder="Tu nombre" value="${esc(state.lastAuthor||'')}"/>
+          ${state.role==='calidad'&&state.inspectorActivo
+            ? `<div style="padding:8px 12px;background:var(--bg3);border-radius:var(--r);font-family:var(--mono);font-size:13px;color:var(--green)">👤 ${esc(state.inspectorActivo.nombre)}</div>`
+            : `<input id="inp-author" type="text" placeholder="Tu nombre" value="${esc(state.lastAuthor||'')}"/>`}
          </div>`;
     const isPIN = pidx===2;
     const lotes=ot.lotes||[];
@@ -2713,7 +2715,9 @@ function renderModal(){
       </div>
       ${editIdx===null?`
       <div class="modal-field"><label>Inspector</label>
-        <input id="inp-author" type="text" placeholder="Tu nombre" value="${esc(state.lastAuthor||'')}"/>
+        ${state.role==='calidad'&&state.inspectorActivo
+          ? `<div style="padding:8px 12px;background:var(--bg3);border-radius:var(--r);font-family:var(--mono);font-size:13px;color:var(--green)">👤 ${esc(state.inspectorActivo.nombre)}</div>`
+          : `<input id="inp-author" type="text" placeholder="Tu nombre" value="${esc(state.lastAuthor||'')}"/>`}
       </div>
       <div class="modal-field"><label>Nueva observación</label>
         <textarea id="inp-obs" rows="2" style="resize:vertical" placeholder="Agregar comentario al historial…"></textarea>
@@ -2885,7 +2889,9 @@ function renderLoteModal(){
     return `<div class="modal-overlay" id="modal-overlay"><div class="modal">
       <div class="modal-title">${m.posId?`Observar posición ${esc(m.posId)}`:`Observación — ${esc(lote?.nombre||'')}`}</div>
       <div class="modal-field"><label>Inspector</label>
-        <input id="inp-author" type="text" placeholder="Tu nombre" value="${esc(state.lastAuthor||'')}"/>
+        ${state.role==='calidad'&&state.inspectorActivo
+          ? `<div style="padding:8px 12px;background:var(--bg3);border-radius:var(--r);font-family:var(--mono);font-size:13px;color:var(--green)">👤 ${esc(state.inspectorActivo.nombre)}</div>`
+          : `<input id="inp-author" type="text" placeholder="Tu nombre" value="${esc(state.lastAuthor||'')}"/>`}
       </div>
       <div class="modal-field"><label>Observación</label>
         <textarea id="inp-obs" rows="3" style="resize:vertical" placeholder="Escribí la observación"></textarea>
@@ -2902,7 +2908,9 @@ function renderLoteModal(){
       <div class="modal-title">${label}</div>
       <div class="modal-sub">Lote <strong>${esc(lote?.nombre||'')}</strong></div>
       <div class="modal-field"><label>Inspector</label>
-        <input id="inp-author" type="text" placeholder="Tu nombre" value="${esc(state.lastAuthor||'')}"/>
+        ${state.role==='calidad'&&state.inspectorActivo
+          ? `<div style="padding:8px 12px;background:var(--bg3);border-radius:var(--r);font-family:var(--mono);font-size:13px;color:var(--green)">👤 ${esc(state.inspectorActivo.nombre)}</div>`
+          : `<input id="inp-author" type="text" placeholder="Tu nombre" value="${esc(state.lastAuthor||'')}"/>`}
       </div>
       <div class="modal-field"><label>Observación (opcional)</label>
         <textarea id="inp-obs" rows="2" style="resize:vertical"></textarea>
@@ -3271,6 +3279,13 @@ function bind(){
     savePrefs();
     state.modal=null; render();
   });
+  // allow Enter key on password field to trigger login
+  const inspPwInput=document.getElementById('inp-inspector-pw');
+  if(inspPwInput){
+    inspPwInput.addEventListener('keydown',e=>{
+      if(e.key==='Enter') document.getElementById('btn-inspector-login-ok')?.click();
+    });
+  }
   // inspector admin management
   on('btn-insp-save','click',()=>{
     const nombre=(document.getElementById('inp-insp-nombre')?.value||'').trim();
@@ -3286,6 +3301,7 @@ function bind(){
       state.inspectores.push({id:genId(), nombre, password:pw||null});
     }
     savePersisted();
+    pushToSupabase(); // force immediate sync for inspector changes
     state.modal={type:'inspectores-admin'}; render();
   });
   document.querySelectorAll('[data-insp-edit]').forEach(b=>{
@@ -3302,7 +3318,7 @@ function bind(){
       state.inspectores.splice(idx,1);
       // clear session if deleted inspector was active
       if(state.inspectorActivo?.id===insp?.id){ state.inspectorActivo=null; }
-      savePersisted(); savePrefs();
+      savePersisted(); savePrefs(); pushToSupabase();
       state.modal={type:'inspectores-admin'}; render();
     });
   });
@@ -4288,7 +4304,10 @@ function performReuploadMerge(ot, newRows){
   const remote=await pullFromSupabase();
   if(remote && Array.isArray(remote.ots)){
     state.ots = remote.ots;
-    if(Array.isArray(remote.inspectores)) state.inspectores = remote.inspectores;
+    // only overwrite local inspectores if remote has actual data
+    if(Array.isArray(remote.inspectores) && remote.inspectores.length>0){
+      state.inspectores = remote.inspectores;
+    }
     savePrefs();
   }
   document.body.classList.toggle('light', state.theme==='light');
@@ -4305,10 +4324,12 @@ function performReuploadMerge(ot, newRows){
     const fresh=await pullFromSupabase();
     if(!fresh || !Array.isArray(fresh.ots)) return;
     const otsChanged=JSON.stringify(fresh.ots)!==JSON.stringify(state.ots);
-    const inspChanged=Array.isArray(fresh.inspectores)&&JSON.stringify(fresh.inspectores)!==JSON.stringify(state.inspectores);
+    // only update inspectores if remote has actual data (avoid overwriting with empty)
+    const remoteInsp=Array.isArray(fresh.inspectores)?fresh.inspectores:null;
+    const inspChanged=remoteInsp&&JSON.stringify(remoteInsp)!==JSON.stringify(state.inspectores);
     if(otsChanged||inspChanged){
       if(otsChanged) state.ots=fresh.ots;
-      if(inspChanged) state.inspectores=fresh.inspectores;
+      if(inspChanged && remoteInsp.length>0) state.inspectores=remoteInsp;
       savePrefs();
       render();
     }
