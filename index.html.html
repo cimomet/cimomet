@@ -864,6 +864,34 @@ function effectiveRole(){
 function activeOt(){ return state.ots.find(o=>o.id===state.activeOtId)||null; }
 function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
 
+// Generate unique key for prodData: combines pos.id with prioridad
+// so the same position name in different prioridades stays separate
+function prodKey(pos){
+  return String(pos.id||'') + (pos.prioridad!==''&&pos.prioridad!==undefined?'__P'+pos.prioridad:'');
+}
+
+// Migrate prodData from old keys (just pos.id) to composite keys (pos.id__Pprio)
+// when there are multiple positions sharing the same pos.id in different prioridades
+function migrateProdData(ot){
+  if(!ot||!ot.prodData||!ot.positions) return;
+  const byId={};
+  ot.positions.forEach(p=>{
+    if(!byId[p.id]) byId[p.id]=[];
+    byId[p.id].push(p);
+  });
+  Object.entries(byId).forEach(([id, positions])=>{
+    if(positions.length<=1) return;
+    const oldData=ot.prodData[id];
+    if(!oldData) return;
+    positions.forEach(p=>{
+      const newKey=prodKey(p);
+      if(newKey!==id && !ot.prodData[newKey]){
+        ot.prodData[newKey]={...oldData};
+      }
+    });
+  });
+}
+
 function getOverall(pos){
   // done if all 4 processes approved
   if(pos.processes.every(p=>p.status==='approved')) return 'done';
@@ -1814,37 +1842,6 @@ function renderPosViewProduccion(ot){
   });
 
   const styleGreen = 'background:rgba(106,170,130,0.18);border-color:rgba(106,170,130,0.5);color:var(--green);';
-
-// Generate unique key for prodData: combines pos.id with prioridad
-// so the same position name in different prioridades stays separate
-function prodKey(pos){
-  return String(pos.id||'') + (pos.prioridad!==''&&pos.prioridad!==undefined?'__P'+pos.prioridad:'');
-}
-
-// Migrate prodData from old keys (just pos.id) to composite keys (pos.id__Pprio)
-// when there's only ONE position with that pos.id we leave it as is for backwards compat
-// when there are multiple, we replicate the data to each new key (so existing data is preserved)
-function migrateProdData(ot){
-  if(!ot.prodData||!ot.positions) return;
-  // group positions by pos.id
-  const byId={};
-  ot.positions.forEach(p=>{
-    if(!byId[p.id]) byId[p.id]=[];
-    byId[p.id].push(p);
-  });
-  Object.entries(byId).forEach(([id, positions])=>{
-    if(positions.length<=1) return; // unique, no migration needed
-    const oldData=ot.prodData[id];
-    if(!oldData) return;
-    // copy to each composite key (if not already there)
-    positions.forEach(p=>{
-      const newKey=prodKey(p);
-      if(newKey!==id && !ot.prodData[newKey]){
-        ot.prodData[newKey]={...oldData};
-      }
-    });
-  });
-}
 
   function prodInputs(dataKey, pos){
     const processes=pos.processes;
