@@ -1815,6 +1815,37 @@ function renderPosViewProduccion(ot){
 
   const styleGreen = 'background:rgba(106,170,130,0.18);border-color:rgba(106,170,130,0.5);color:var(--green);';
 
+// Generate unique key for prodData: combines pos.id with prioridad
+// so the same position name in different prioridades stays separate
+function prodKey(pos){
+  return String(pos.id||'') + (pos.prioridad!==''&&pos.prioridad!==undefined?'__P'+pos.prioridad:'');
+}
+
+// Migrate prodData from old keys (just pos.id) to composite keys (pos.id__Pprio)
+// when there's only ONE position with that pos.id we leave it as is for backwards compat
+// when there are multiple, we replicate the data to each new key (so existing data is preserved)
+function migrateProdData(ot){
+  if(!ot.prodData||!ot.positions) return;
+  // group positions by pos.id
+  const byId={};
+  ot.positions.forEach(p=>{
+    if(!byId[p.id]) byId[p.id]=[];
+    byId[p.id].push(p);
+  });
+  Object.entries(byId).forEach(([id, positions])=>{
+    if(positions.length<=1) return; // unique, no migration needed
+    const oldData=ot.prodData[id];
+    if(!oldData) return;
+    // copy to each composite key (if not already there)
+    positions.forEach(p=>{
+      const newKey=prodKey(p);
+      if(newKey!==id && !ot.prodData[newKey]){
+        ot.prodData[newKey]={...oldData};
+      }
+    });
+  });
+}
+
   function prodInputs(dataKey, pos){
     const processes=pos.processes;
     const qty=Number(pos.qty)||1;
@@ -1882,7 +1913,7 @@ function renderPosViewProduccion(ot){
   }
 
   const rows=filtered.map(pos=>{
-    const parentInputs = prodInputs(pos.id, pos) + '<td></td>';
+    const parentInputs = prodInputs(prodKey(pos), pos) + '<td></td>';
 
     const lote=ot.lotes?.find(l=>l.id===pos.loteId);
     const loteCell=`<td>
@@ -1906,7 +1937,7 @@ function renderPosViewProduccion(ot){
 
   // ── mobile cards ──
   const mobileCards=filtered.map(pos=>{
-    const pd=ot.prodData[pos.id]||{};
+    const pd=ot.prodData[prodKey(pos)]||{};
     const ext=normLugar(pos.construye)==='ext';
     const extData=ot.calExtData?.[pos.id]||{};
     const qty=Number(pos.qty)||1;
@@ -1960,8 +1991,8 @@ function renderPosViewProduccion(ot){
           ${ext
             ? `<div style="font-family:var(--mono);font-size:20px;font-weight:600;color:${avArmOk?'var(--green)':'var(--text2)'}">${avArm}%</div>
                <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">${extData.armadas||0} / ${qty} unidades</div>`
-            : `<input type="date" class="prod-input" data-id="${esc(pos.id)}" data-field="fechaInicioArmado" value="${esc(fechaArm)}" style="width:100%;margin-bottom:5px"/>
-               <input type="number" class="prod-input" data-id="${esc(pos.id)}" data-field="avanceArmado" value="${avArm}" min="0" max="100" placeholder="% avance" style="width:100%;${avArmOk?sg:''}"/>`}
+            : `<input type="date" class="prod-input" data-id="${esc(prodKey(pos))}" data-field="fechaInicioArmado" value="${esc(fechaArm)}" style="width:100%;margin-bottom:5px"/>
+               <input type="number" class="prod-input" data-id="${esc(prodKey(pos))}" data-field="avanceArmado" value="${avArm}" min="0" max="100" placeholder="% avance" style="width:100%;${avArmOk?sg:''}"/>`}
           <div style="margin-top:6px">${cdBadge}</div>
         </div>
         <div>
@@ -1969,14 +2000,14 @@ function renderPosViewProduccion(ot){
           ${ext
             ? `<div style="font-family:var(--mono);font-size:20px;font-weight:600;color:${avSolOk?'var(--green)':'var(--text2)'}">${avSol}%</div>
                <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">${extData.soldadas||0} / ${qty} unidades</div>`
-            : `<input type="date" class="prod-input" data-id="${esc(pos.id)}" data-field="fechaInicioSoldadura" value="${esc(fechaSol)}" style="width:100%;margin-bottom:5px"/>
-               <input type="number" class="prod-input" data-id="${esc(pos.id)}" data-field="avanceSoldadura" value="${avSol}" min="0" max="100" placeholder="% avance" style="width:100%;${avSolOk?sg:''}"/>`}
+            : `<input type="date" class="prod-input" data-id="${esc(prodKey(pos))}" data-field="fechaInicioSoldadura" value="${esc(fechaSol)}" style="width:100%;margin-bottom:5px"/>
+               <input type="number" class="prod-input" data-id="${esc(prodKey(pos))}" data-field="avanceSoldadura" value="${avSol}" min="0" max="100" placeholder="% avance" style="width:100%;${avSolOk?sg:''}"/>`}
           <div style="margin-top:6px">${apBadge}</div>
         </div>
       </div>
       <div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:5px">Pintado (unidades)</div>
-        <input type="number" class="prod-input" data-id="${esc(pos.id)}" data-field="pintado" value="${pint}" min="0" placeholder="0" style="width:100%;${pintOk?sg:''}"/>
+        <input type="number" class="prod-input" data-id="${esc(prodKey(pos))}" data-field="pintado" value="${pint}" min="0" placeholder="0" style="width:100%;${pintOk?sg:''}"/>
       </div>
     </div>`;
   }).join('');
@@ -4341,6 +4372,8 @@ function performReuploadMerge(ot, newRows){
     }
     savePrefs();
   }
+  // migrate prodData keys for positions that share pos.id across different prioridades
+  state.ots.forEach(ot=>migrateProdData(ot));
   document.body.classList.toggle('light', state.theme==='light');
   // initialize history with current state (replace, don't push)
   history.replaceState({
