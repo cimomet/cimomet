@@ -1175,11 +1175,11 @@ function renderHomeView(){
         const prodData=o.prodData||{};
         const totalKg=positions.reduce((a,p)=>a+(Number(p.pesoTotal)||0),0);
         const armadoKg=positions.reduce((a,p)=>{
-          const pd=prodData[p.id]||{};
+          const pd=prodData[prodKey(p)]||{};
           return a+(Number(p.pesoTotal)||0)*(Number(pd.avanceArmado)||0)/100;
         },0);
         const soldadoKg=positions.reduce((a,p)=>{
-          const pd=prodData[p.id]||{};
+          const pd=prodData[prodKey(p)]||{};
           return a+(Number(p.pesoTotal)||0)*(Number(pd.avanceSoldadura)||0)/100;
         },0);
 
@@ -1446,7 +1446,7 @@ function calcProdStats(positions, prodData){
   const totalQty=positions.reduce((a,p)=>a+(Number(p.qty)||0),0);
   let armadoKg=0, soldadoKg=0, pintadoKg=0;
   positions.forEach(pos=>{
-    const pd=prodData[pos.id]||{};
+    const pd=prodData[prodKey(pos)]||{};
     const peso=Number(pos.pesoTotal)||0;
     const qty=Number(pos.qty)||0;
     const avArm=Number(pd.avanceArmado)||0;
