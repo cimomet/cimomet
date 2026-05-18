@@ -1332,7 +1332,7 @@ function renderPackingView(ot){
 
 function renderEditableTable(rows, ot){
   const filterPrio=state.filters.ingPrioridad||'';
-  const prioridades=[...new Set(rows.map(r=>String(r.prioridad||'')).filter(Boolean))].sort();
+  const prioridades=[...new Set(rows.map(r=>String(r.prioridad||'')).filter(Boolean))].sort((a,b)=>Number(a)-Number(b)||a.localeCompare(b,"es",{numeric:true}));
 
   const filtered=filterPrio?rows.map((r,origIdx)=>({r,origIdx})).filter(({r})=>String(r.prioridad||'')===filterPrio):rows.map((r,origIdx)=>({r,origIdx}));
 
@@ -1456,7 +1456,7 @@ function renderTableroProduccion(ot){
     if(!prioMap[prio]) prioMap[prio]=[];
     prioMap[prio].push(pos);
   });
-  const prioKeys=Object.keys(prioMap).sort();
+  const prioKeys=Object.keys(prioMap).sort((a,b)=>Number(a)-Number(b)||a.localeCompare(b,"es",{numeric:true}));
 
   const prioCards=prioKeys.map(prio=>{
     const pStats=calcProdStats(prioMap[prio], ot.prodData);
@@ -1695,7 +1695,7 @@ function renderTableroDefault(ot){
       ${(()=>{
         const prioMap={};
         units.forEach(u=>{ const p=u.prioridad||'—'; if(!prioMap[p]) prioMap[p]=[]; prioMap[p].push(u); });
-        const prioKeys=Object.keys(prioMap).sort();
+        const prioKeys=Object.keys(prioMap).sort((a,b)=>Number(a)-Number(b)||a.localeCompare(b,"es",{numeric:true}));
         if(!prioKeys.length) return '<div style="color:var(--text3);font-size:13px;font-family:var(--mono)">Sin prioridades definidas.</div>';
         return prioKeys.map(prio=>{
           const us=prioMap[prio];
@@ -1801,7 +1801,7 @@ function renderPosViewProduccion(ot){
 
   // unique sorted priorities from positions (respecting taller filter)
   const posForPrio=selectedTalleres.length>0?positions.filter(p=>selectedTalleres.includes(getTaller(p))):positions;
-  const prioridades=[...new Set(posForPrio.map(p=>String(p.prioridad||'')).filter(Boolean))].sort();
+  const prioridades=[...new Set(posForPrio.map(p=>String(p.prioridad||'')).filter(Boolean))].sort((a,b)=>Number(a)-Number(b)||a.localeCompare(b,"es",{numeric:true}));
 
   const filtered=positions.filter(pos=>{
     if(selectedTalleres.length>0 && !selectedTalleres.includes(getTaller(pos))) return false;
@@ -2052,7 +2052,7 @@ function renderPosViewDefault(ot){
   });
   const selectedTalleresCal=f.talleres&&f.talleres.length>0?f.talleres:[];
   const posForPrioCal=selectedTalleresCal.length>0?positions.filter(p=>selectedTalleresCal.includes(getTallerCal(p))):positions;
-  const prioridades=[...new Set(posForPrioCal.map(p=>String(p.prioridad||'')).filter(Boolean))].sort();
+  const prioridades=[...new Set(posForPrioCal.map(p=>String(p.prioridad||'')).filter(Boolean))].sort((a,b)=>Number(a)-Number(b)||a.localeCompare(b,"es",{numeric:true}));
 
   // Check whether a target (parent processes or a single sub) matches the estado filter
   // Returns true if matches the selected estado filter (single value, '' = all)
@@ -2330,14 +2330,13 @@ function renderPosViewDefault(ot){
             const allSubsAction = hasSubs ? `<div class="abtn-group">
               ${CAL_PROCS.map((n,i)=>{
                 const allApproved=pos.subs.every(s=>s.processes[i]?.status==='approved');
-                const canInsp=calCanInspect({processes:pos.subs[0]?.processes||[]},i);
                 if(allApproved){
-                  return `<button type="button" class="abtn corr" data-act="calapplyall-proc" data-id="${esc(pos.id)}" data-pidx="${i}">Mod. ${CAL_SHORT[i]}</button>`;
+                  return `<button type="button" class="abtn corr" style="min-height:38px;padding:6px 10px" data-act="calapplyall-proc" data-id="${esc(pos.id)}" data-pidx="${i}">Mod. ${CAL_SHORT[i]}</button>`;
                 } else {
-                  return `<button type="button" class="abtn" ${canInsp?'':'disabled'} data-act="calapplyall-proc" data-id="${esc(pos.id)}" data-pidx="${i}">${CAL_SHORT[i]}</button>`;
+                  return `<button type="button" class="abtn" style="min-height:38px;padding:6px 10px" data-act="calapplyall-proc" data-id="${esc(pos.id)}" data-pidx="${i}">${CAL_SHORT[i]}</button>`;
                 }
               }).join('')}
-              <button type="button" class="abtn" style="font-size:10px;border-color:rgba(138,122,196,0.3);color:var(--purple)" data-expand-inline="${esc(pos.id)}" title="Ver unidades">
+              <button type="button" class="abtn" style="min-height:38px;padding:6px 10px;border-color:rgba(138,122,196,0.3);color:var(--purple)" data-expand-inline="${esc(pos.id)}" title="Ver unidades">
                 <svg viewBox="0 0 16 16" fill="none" style="width:12px;height:12px;display:inline-block;vertical-align:middle"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
             </div>` : '';
@@ -3718,11 +3717,17 @@ function bind(){
 
   // cal apply-all per process (mobile card button)
   document.querySelectorAll('[data-act="calapplyall-proc"]').forEach(b=>{
-    if(b.disabled) return;
     b.addEventListener('click',e=>{
       e.stopPropagation();
+      e.preventDefault();
       const posId=b.dataset.id;
       const pidx=parseInt(b.dataset.pidx);
+      console.log('[calapplyall-proc] click', {posId, pidx, role:state.role, inspector:state.inspectorActivo});
+      // block if calidad without inspector
+      if(state.role==='calidad' && !state.inspectorActivo){
+        alert('Tenés que iniciar sesión como inspector para realizar controles.');
+        state.modal={type:'inspector-login'}; render(); return;
+      }
       // open inspect modal but mark as applyall
       state.modal={type:'inspect', posId, procIdx:pidx, subIdx:null, applyAllSubs:true};
       state.corrTarget=null; render();
