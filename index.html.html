@@ -875,14 +875,23 @@ function prodKey(pos){
 // when there are multiple positions sharing the same pos.id in different prioridades
 function migrateProdData(ot){
   if(!ot||!ot.positions) return;
-  // Ensure every position has a uid (for positions created before this feature)
+  // Ensure every position has a uid
   ot.positions.forEach(p=>{
     if(!p.uid) p.uid=genId();
   });
-  // Ensure every draftPosition has a uid too
+  // Link draftPositions to positions by index order — for OTs published before uid existed
+  // both arrays were created in the same order, so we can match by index
   if(Array.isArray(ot.draftPositions)){
-    ot.draftPositions.forEach(p=>{
-      if(!p.uid) p.uid=genId();
+    ot.draftPositions.forEach((dp, i)=>{
+      if(!dp.uid){
+        // try to find matching position by pos id + qty + prioridad at same index
+        const posAtIdx=ot.positions[i];
+        if(posAtIdx && posAtIdx.id===dp.pos){
+          dp.uid=posAtIdx.uid;
+        } else {
+          dp.uid=genId();
+        }
+      }
     });
   }
   if(!ot.prodData) return;
@@ -3575,10 +3584,11 @@ function bind(){
       const oldQty=Number(row.qty)||0;
       if(col==='qty'||col==='pesoUnit'||col==='pesoTotal') row[col]=inp.value===''?'':Number(inp.value);
       else row[col]=inp.value;
-      // sync to positions if published
+      // sync to positions if published — match by uid (unique per row), fallback to pos.id
       if(ot.plPublished){
-        const posId=row.pos;
-        const pos=ot.positions.find(p=>p.id===posId);
+        const pos = row.uid
+          ? ot.positions.find(p=>p.uid===row.uid)
+          : ot.positions.find(p=>p.id===row.pos);
         if(pos){
           pos[col]=row[col];
           if(col==='qty'){
@@ -3586,7 +3596,7 @@ function bind(){
             pos.qty=newQty;
             if(newQty>1){
               if(!pos.subs) pos.subs=[];
-              while(pos.subs.length<newQty) pos.subs.push({subId:`${posId}-${pos.subs.length+1}`,processes:mkProcs(),activeProc:0});
+              while(pos.subs.length<newQty) pos.subs.push({subId:`${pos.id}-${pos.subs.length+1}`,processes:mkProcs(),activeProc:0});
               if(pos.subs.length>newQty) pos.subs=pos.subs.slice(0,newQty);
             } else {
               pos.subs=null;
