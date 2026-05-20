@@ -864,16 +864,28 @@ function effectiveRole(){
 function activeOt(){ return state.ots.find(o=>o.id===state.activeOtId)||null; }
 function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
 
-// Generate unique key for prodData: combines pos.id with prioridad
-// so the same position name in different prioridades stays separate
+// Generate unique key for prodData: uses the position's uid (unique per row in packing list)
+// Falls back to pos.id + prioridad for older data
 function prodKey(pos){
+  if(pos.uid) return pos.uid;
   return String(pos.id||'') + (pos.prioridad!==''&&pos.prioridad!==undefined?'__P'+pos.prioridad:'');
 }
 
 // Migrate prodData from old keys (just pos.id) to composite keys (pos.id__Pprio)
 // when there are multiple positions sharing the same pos.id in different prioridades
 function migrateProdData(ot){
-  if(!ot||!ot.prodData||!ot.positions) return;
+  if(!ot||!ot.positions) return;
+  // Ensure every position has a uid (for positions created before this feature)
+  ot.positions.forEach(p=>{
+    if(!p.uid) p.uid=genId();
+  });
+  // Ensure every draftPosition has a uid too
+  if(Array.isArray(ot.draftPositions)){
+    ot.draftPositions.forEach(p=>{
+      if(!p.uid) p.uid=genId();
+    });
+  }
+  if(!ot.prodData) return;
   const byId={};
   ot.positions.forEach(p=>{
     if(!byId[p.id]) byId[p.id]=[];
@@ -3540,7 +3552,7 @@ function bind(){
             processes:mkProcs(), activeProc:0
           }))
         : null;
-      return {id:p.pos,...p, processes:mkProcs(), activeProc:0, subs};
+      return {id:p.pos, uid:p.uid||genId(), ...p, processes:mkProcs(), activeProc:0, subs};
     });
     ot.plPublished=true; savePersisted(); render();
   });
@@ -3610,7 +3622,7 @@ function bind(){
     const constr=($('nr-const')?.value||'').trim();
     const prior =($('nr-prior')?.value||'').trim();
     if(!pos){ alert('El nombre de posición es obligatorio.'); return; }
-    const newRow={pos,denom,plano,qty,pesoUnit:puint,pesoTotal:ptotal,construye:constr,prioridad:prior};
+    const newRow={uid:genId(),pos,denom,plano,qty,pesoUnit:puint,pesoTotal:ptotal,construye:constr,prioridad:prior};
     ot.draftPositions.push(newRow);
     if(ot.plPublished){
       const newPos={id:pos,...newRow,processes:mkProcs(),activeProc:0,subs:null};
@@ -4163,6 +4175,7 @@ function parseExcel(file){
         const pesoTotal=rawPT!==''?Number(rawPT):'';
 
         positions.push({
+          uid: genId(),
           pos, plano,
           denom:  colMap.denom>=0?String(row[colMap.denom]||'').trim():'',
           qty:    isNaN(qty)?'':qty,
@@ -4313,6 +4326,7 @@ function performReuploadMerge(ot, newRows){
     } else {
       const fresh={
         id:row.pos,
+        uid: row.uid || genId(),
         ...row,
         processes:mkProcs(),
         activeProc:0,
@@ -4369,6 +4383,20 @@ function performReuploadMerge(ot, newRows){
     }
     savePrefs();
   }
+  // backup before migration (one-time, kept in localStorage in case anything goes wrong)
+  try{
+    const backupKey='cimomet_backup_pre_uid';
+    if(!localStorage.getItem(backupKey)){
+      const backup={
+        date: new Date().toISOString(),
+        ots: state.ots,
+        inspectores: state.inspectores||[],
+      };
+      localStorage.setItem(backupKey, JSON.stringify(backup));
+      console.log('[Cimomet] Backup creado antes de la migración uid. Si necesitás restaurarlo, está guardado en localStorage["cimomet_backup_pre_uid"]');
+    }
+  }catch(e){ console.warn('No se pudo crear backup:', e); }
+
   // migrate prodData keys for positions that share pos.id across different prioridades
   state.ots.forEach(ot=>migrateProdData(ot));
   document.body.classList.toggle('light', state.theme==='light');
