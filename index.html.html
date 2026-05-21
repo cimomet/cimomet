@@ -4172,7 +4172,7 @@ function parseExcel(file){
         const row=raw[i];
         const pos=colMap.pos>=0?String(row[colMap.pos]||'').trim():'';
         const plano=colMap.plano>=0?String(row[colMap.plano]||'').trim():'';
-        if(!pos||!plano) continue;
+        if(!pos) continue;
 
         const rawQty=colMap.qty>=0?row[colMap.qty]:'';
         const rawPU=colMap.pesoUnit>=0?row[colMap.pesoUnit]:'';
