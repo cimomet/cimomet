@@ -901,7 +901,7 @@ function migrateProdData(ot){
       }
     });
   }
-  if(!ot.prodData) return;
+  // migrate prodData and calExtData
   const byId={};
   ot.positions.forEach(p=>{
     if(!byId[p.id]) byId[p.id]=[];
@@ -909,14 +909,30 @@ function migrateProdData(ot){
   });
   Object.entries(byId).forEach(([id, positions])=>{
     if(positions.length<=1) return;
-    const oldData=ot.prodData[id];
-    if(!oldData) return;
-    positions.forEach(p=>{
-      const newKey=prodKey(p);
-      if(newKey!==id && !ot.prodData[newKey]){
-        ot.prodData[newKey]={...oldData};
+    // prodData
+    if(ot.prodData){
+      const oldData=ot.prodData[id];
+      if(oldData){
+        positions.forEach(p=>{
+          const newKey=prodKey(p);
+          if(newKey!==id && !ot.prodData[newKey]){
+            ot.prodData[newKey]={...oldData};
+          }
+        });
       }
-    });
+    }
+    // calExtData
+    if(ot.calExtData){
+      const oldExt=ot.calExtData[id];
+      if(oldExt){
+        positions.forEach(p=>{
+          const newKey=prodKey(p);
+          if(newKey!==id && !ot.calExtData[newKey]){
+            ot.calExtData[newKey]={...oldExt};
+          }
+        });
+      }
+    }
   });
 }
 
@@ -2871,31 +2887,90 @@ function renderLoteDetalle(l, positions){
   // positions
   const posRowsArr=[];
   (l.posIds||[]).forEach(pid=>{
-    const p=positions.find(x=>x.id===pid); if(!p) return;
-    const est=l.posEstados?.[pid]||'pendiente';
-    const estColor=est==='aprobado'?'var(--green)':est==='rechazado'?'var(--red)':'var(--text3)';
-    const estLabel=est==='aprobado'?'✓ Aprobado':est==='rechazado'?'✗ Rechazado':'Pendiente';
-    const obs=l.posObs?.[pid]||'';
+    const p=positions.find(x=>x.uid===pid)||positions.find(x=>x.id===pid); if(!p) return;
+    const qty=Number(p.qty)||1;
+    const hasSubs=qty>1 && p.subs && p.subs.length>0;
+    const expandKey=`lotePos__${l.id}__${pid}`;
+    const isExpanded=!!state.expanded[expandKey];
+
+    // aggregate state from subs if expanded
+    let est, estColor, estLabel, obs;
+    if(hasSubs){
+      // aggregate state from sub-positions
+      const subEstados=p.subs.map(s=>{
+        const spid=`${pid}::${s.subId}`;
+        return l.subPosEstados?.[spid]||'pendiente';
+      });
+      const allOk=subEstados.every(e=>e==='aprobado');
+      const anyRej=subEstados.some(e=>e==='rechazado');
+      est=allOk?'aprobado':anyRej?'rechazado':'pendiente';
+      estColor=allOk?'var(--green)':anyRej?'var(--red)':'var(--text3)';
+      const okCount=subEstados.filter(e=>e==='aprobado').length;
+      const rejCount=subEstados.filter(e=>e==='rechazado').length;
+      const pendCount=subEstados.filter(e=>e==='pendiente').length;
+      estLabel=`<span style="color:var(--green)">${okCount}✓</span> · <span style="color:var(--red)">${rejCount}✗</span> · <span style="color:var(--text3)">${pendCount}⏳</span>`;
+      obs='';
+    } else {
+      est=l.posEstados?.[pid]||'pendiente';
+      estColor=est==='aprobado'?'var(--green)':est==='rechazado'?'var(--red)':'var(--text3)';
+      estLabel=est==='aprobado'?'✓ Aprobado':est==='rechazado'?'✗ Rechazado':'Pendiente';
+      obs=l.posObs?.[pid]||'';
+    }
+
+    const expandBtn=hasSubs?`<button type="button" class="expand-btn ${isExpanded?'open':''}" data-expand-lote-pos="${esc(expandKey)}" style="margin-right:6px"><svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`:'';
+
+    const actionButtons=hasSubs?`
+      <button type="button" class="abtn" style="font-size:11px" data-lote-pos-obs="${esc(l.id)}" data-pos-id="${esc(pid)}">Obs. lote</button>
+      <button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-pos-est-all="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="aprobado" title="Aprobar todas las unidades">✓ Todas</button>
+      <button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-pos-est-all="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="rechazado" title="Rechazar todas las unidades">✗ Todas</button>
+    `:`
+      <button type="button" class="abtn" style="font-size:11px" data-lote-pos-obs="${esc(l.id)}" data-pos-id="${esc(pid)}">Obs.</button>
+      ${est!=='aprobado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-pos-est="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="aprobado">✓</button>`:''}
+      ${est!=='rechazado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-pos-est="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="rechazado">✗</button>`:''}
+    `;
+
     posRowsArr.push(`<div style="padding:10px 14px;border-top:1px solid var(--border);background:var(--bg2)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
-        <div>
+        <div style="display:flex;align-items:center">
+          ${expandBtn}
           <span style="font-family:var(--mono);font-size:13px;font-weight:700">${esc(p.id)}</span>
           <span style="font-size:12px;color:var(--text2);margin-left:8px">${esc(p.denom)}</span>
-          <span style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-left:6px">×${p.qty||1}</span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-left:6px">×${qty}</span>
         </div>
         <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:${estColor}">${estLabel}</span>
       </div>
       ${obs?`<div style="font-size:12px;color:var(--text2);margin-bottom:6px;font-style:italic">"${esc(obs)}"</div>`:''}
-      <div class="abtn-group">
-        <button type="button" class="abtn" style="font-size:11px" data-lote-pos-obs="${esc(l.id)}" data-pos-id="${esc(pid)}">Obs.</button>
-        ${est!=='aprobado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-pos-est="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="aprobado">✓</button>`:''}
-        ${est!=='rechazado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-pos-est="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="rechazado">✗</button>`:''}
-      </div>
+      <div class="abtn-group">${actionButtons}</div>
     </div>`);
+
+    // expanded sub-positions
+    if(hasSubs && isExpanded){
+      p.subs.forEach(sub=>{
+        const spid=`${pid}::${sub.subId}`;
+        const sEst=l.subPosEstados?.[spid]||'pendiente';
+        const sColor=sEst==='aprobado'?'var(--green)':sEst==='rechazado'?'var(--red)':'var(--text3)';
+        const sLabel=sEst==='aprobado'?'✓ Aprobado':sEst==='rechazado'?'✗ Rechazado':'Pendiente';
+        const sObs=l.subPosObs?.[spid]||'';
+        posRowsArr.push(`<div style="padding:8px 14px 8px 42px;border-top:1px solid var(--border);background:var(--bg3)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
+            <div>
+              <span style="font-family:var(--mono);font-size:12px;color:var(--accent2)">↳ ${esc(sub.subId)}</span>
+            </div>
+            <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:${sColor}">${sLabel}</span>
+          </div>
+          ${sObs?`<div style="font-size:11px;color:var(--text2);margin-bottom:6px;font-style:italic">"${esc(sObs)}"</div>`:''}
+          <div class="abtn-group">
+            <button type="button" class="abtn" style="font-size:11px" data-lote-sub-obs="${esc(l.id)}" data-spid="${esc(spid)}">Obs.</button>
+            ${sEst!=='aprobado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="aprobado">✓</button>`:''}
+            ${sEst!=='rechazado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="rechazado">✗</button>`:''}
+          </div>
+        </div>`);
+      });
+    }
   });
   (l.subPosIds||[]).forEach(spid=>{
     const [parentId,subId]=spid.split('::');
-    const p=positions.find(x=>x.id===parentId); if(!p) return;
+    const p=positions.find(x=>x.uid===parentId)||positions.find(x=>x.id===parentId); if(!p) return;
     const est=l.subPosEstados?.[spid]||'pendiente';
     const estColor=est==='aprobado'?'var(--green)':est==='rechazado'?'var(--red)':'var(--text3)';
     const estLabel=est==='aprobado'?'✓ Aprobado':est==='rechazado'?'✗ Rechazado':'Pendiente';
@@ -3187,6 +3262,34 @@ function bind(){
     });
   });
 
+  // expand a position in lote view (show sub-units)
+  document.querySelectorAll('[data-expand-lote-pos]').forEach(b=>{
+    b.addEventListener('click',e=>{
+      e.stopPropagation();
+      const k=b.dataset.expandLotePos;
+      state.expanded[k]=!state.expanded[k];
+      render();
+    });
+  });
+
+  // approve/reject ALL sub-units of a position in lote
+  document.querySelectorAll('[data-lote-pos-est-all]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const ot=activeOt(); if(!ot) return;
+      const lote=ot.lotes?.find(l=>l.id===b.dataset.lotePosEstAll); if(!lote) return;
+      const posId=b.dataset.posId;
+      const est=b.dataset.est;
+      const pos=findPos(ot, posId);
+      if(!pos||!pos.subs) return;
+      if(!lote.subPosEstados) lote.subPosEstados={};
+      pos.subs.forEach(sub=>{
+        const spid=`${posId}::${sub.subId}`;
+        lote.subPosEstados[spid]=est;
+      });
+      savePersisted(); render();
+    });
+  });
+
   // lote asignar sub-pos (calidad)
   document.querySelectorAll('[data-lote-asignar-sub]').forEach(b=>{
     b.addEventListener('click',e=>{
@@ -3262,11 +3365,12 @@ function bind(){
     // remove from old lote if any
     if(pos.loteId && pos.loteId!==loteId){
       const oldLote=ot.lotes.find(l=>l.id===pos.loteId);
-      if(oldLote) oldLote.posIds=oldLote.posIds.filter(id=>id!==pos.id);
+      if(oldLote) oldLote.posIds=oldLote.posIds.filter(id=>id!==(pos.uid||pos.id));
     }
     pos.loteId=loteId;
     const lote=ot.lotes.find(l=>l.id===loteId);
-    if(lote && !lote.posIds.includes(pos.id)) lote.posIds.push(pos.id);
+    const posKey=pos.uid||pos.id;
+    if(lote && !lote.posIds.includes(posKey)) lote.posIds.push(posKey);
     state.modal=null; savePersisted(); render();
   });
   on('btn-lote-quitar','click',()=>{
@@ -3274,7 +3378,7 @@ function bind(){
     const pos=findPos(ot, state.modal.posId); if(!pos) return;
     if(pos.loteId){
       const lote=ot.lotes?.find(l=>l.id===pos.loteId);
-      if(lote) lote.posIds=lote.posIds.filter(id=>id!==pos.id);
+      if(lote) lote.posIds=lote.posIds.filter(id=>id!==(pos.uid||pos.id));
       pos.loteId=null;
     }
     state.modal=null; savePersisted(); render();
@@ -3621,7 +3725,10 @@ function bind(){
       const ot=activeOt(); if(!ot) return;
       const idx=parseInt(b.dataset.delRow);
       const row=ot.draftPositions[idx];
-      if(ot.plPublished) ot.positions=ot.positions.filter(p=>p.id!==row?.pos);
+      if(ot.plPublished){
+        if(row?.uid) ot.positions=ot.positions.filter(p=>p.uid!==row.uid);
+        else if(row?.pos) ot.positions=ot.positions.filter(p=>p.id!==row.pos);
+      }
       ot.draftPositions.splice(idx,1);
       savePersisted(); render();
     });
@@ -4107,11 +4214,11 @@ function doInspect(result){
 
   if(applyAll){
     let blocked=false;
-    pos.subs.forEach(sub=>{ if(!applyToProcesses(sub.processes, pos.id)) blocked=true; });
+    pos.subs.forEach(sub=>{ if(!applyToProcesses(sub.processes, pos.uid||pos.id)) blocked=true; });
     if(blocked){ alert('No se puede aprobar Soldadura sin haber aprobado el Armado primero.'); return; }
   } else {
     const processes=getProcesses(pos,subIdx);
-    if(!applyToProcesses(processes, pos.id)){ alert('No se puede aprobar Soldadura sin haber aprobado el Armado primero.'); return; }
+    if(!applyToProcesses(processes, pos.uid||pos.id)){ alert('No se puede aprobar Soldadura sin haber aprobado el Armado primero.'); return; }
     let next=0;
     while(next<PROCS.length&&processes[next].status==='approved') next++;
     if(subIdx===null) pos.activeProc=next;
