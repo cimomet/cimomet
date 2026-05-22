@@ -3950,6 +3950,8 @@ function bind(){
     b.addEventListener('click',()=>{
       if(b.classList.contains('abtn-disabled')) return;
       const act=b.dataset.act;
+      // calapplyall-proc has its own dedicated handler above
+      if(act==='calapplyall-proc') return;
       const id=b.dataset.id;
       const subIdx=b.dataset.subidx!==undefined?parseInt(b.dataset.subidx):null;
       if(act==='modificar'){
