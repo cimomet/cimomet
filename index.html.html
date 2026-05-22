@@ -375,6 +375,7 @@ body.archived-ot #btn-reset{
 }
 .abtn:hover:not(:disabled){border-color:var(--accent);color:var(--accent);background:rgba(79,142,247,0.06);}
 .abtn:disabled{opacity:0.25;cursor:not-allowed;}
+.abtn-disabled{opacity:0.25;cursor:not-allowed;pointer-events:none;}
 .abtn.corr{border-color:rgba(245,166,35,0.35);color:var(--amber);}
 .abtn.corr:hover{border-color:var(--amber);background:rgba(245,166,35,0.06);}
 .abtn-group{display:flex;gap:5px;flex-wrap:wrap;align-items:center;}
@@ -864,6 +865,12 @@ function effectiveRole(){
 function activeOt(){ return state.ots.find(o=>o.id===state.activeOtId)||null; }
 function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
 
+// Find a position by key — first tries uid, then pos.id (fallback for legacy data)
+function findPos(ot, key){
+  if(!ot||!ot.positions) return null;
+  return ot.positions.find(p=>p.uid===key) || ot.positions.find(p=>p.id===key) || null;
+}
+
 // Generate unique key for prodData: uses the position's uid (unique per row in packing list)
 // Falls back to pos.id + prioridad for older data
 function prodKey(pos){
@@ -968,7 +975,7 @@ function calActionBtns(pos, processes, posId, subIdx){
     if(isInspected){
       return `<button type="button" class="abtn corr" data-act="modificar" data-id="${esc(posId)}" data-pidx="${i}" ${sidx} title="Mod. ${CAL_SHORT[i]}">Mod. ${CAL_SHORT[i]}</button>`;
     } else {
-      return `<button type="button" class="abtn" ${canInsp?'':'disabled'} data-act="inspect-proc" data-id="${esc(posId)}" data-pidx="${i}" ${sidx} title="${!canInsp?'Requiere armado aprobado':CAL_SHORT[i]}">${CAL_SHORT[i]}</button>`;
+      return `<button type="button" class="abtn${canInsp?'':' abtn-disabled'}" data-act="inspect-proc" data-id="${esc(posId)}" data-pidx="${i}" ${sidx} title="${!canInsp?'Requiere armado aprobado':CAL_SHORT[i]}">${CAL_SHORT[i]}</button>`;
     }
   }).join('');
 }
@@ -1937,7 +1944,7 @@ function renderPosViewProduccion(ot){
     const loteCell=`<td>
       <div style="display:flex;align-items:center;gap:4px">
         ${lote?`<span style="font-family:var(--mono);font-size:11px;color:var(--accent2)">${esc(lote.nombre)}</span>`:'<span style="color:var(--text3);font-size:11px">—</span>'}
-        <button type="button" class="abtn" style="font-size:9px;padding:2px 6px" data-lote-asignar="${esc(pos.id)}">${lote?'✏':'+'}</button>
+        <button type="button" class="abtn" style="font-size:9px;padding:2px 6px" data-lote-asignar="${esc(prodKey(pos))}">${lote?'✏':'+'}</button>
       </div>
     </td>`;
 
@@ -2198,7 +2205,7 @@ function renderPosViewDefault(ot){
       } else {
         const lbl = hasPartial ? `${CAL_SHORT[i]}*` : CAL_SHORT[i];
         const tip = !canInsp ? 'Requiere armado aprobado' : (hasPartial ? 'Tiene controles parciales' : '');
-        return `<button type="button" class="abtn" ${canInsp?'':'disabled'} data-act="inspect-proc" data-id="${esc(posId)}" data-pidx="${i}" ${sidx} title="${esc(tip)}">${lbl}</button>`;
+        return `<button type="button" class="abtn${canInsp?'':' abtn-disabled'}" data-act="inspect-proc" data-id="${esc(posId)}" data-pidx="${i}" ${sidx} title="${esc(tip)}">${lbl}</button>`;
       }
     }).join('');
     return `<div class="abtn-group">${btns}</div>`;
@@ -2237,10 +2244,10 @@ function renderPosViewDefault(ot){
 
   const rows=filtered.map(pos=>{
     const hasSubs=pos.subs&&pos.subs.length>0;
-    const isExpanded=!!state.expanded[pos.id];
+    const isExpanded=!!state.expanded[prodKey(pos)];
     const ext=isExt(pos);
     const expandBtn=hasSubs
-      ? `<button type="button" class="expand-btn ${isExpanded?'open':''} " data-expand="${esc(pos.id)}"><svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
+      ? `<button type="button" class="expand-btn ${isExpanded?'open':''} " data-expand="${esc(prodKey(pos))}"><svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
       : '<span style="display:inline-block;width:20px"></span>';
 
     const pipeline = hasSubs
@@ -2256,10 +2263,10 @@ function renderPosViewDefault(ot){
         }), CAL_SHORT)
       : renderPipeline(pos.processes, CAL_SHORT);
     const mainAction = hasSubs
-      ? `<div class="abtn-group">${calRowActions(pos.processes, pos.id, null)}<button type="button" class="abtn" style="font-size:10px;border-color:rgba(138,122,196,0.3);color:var(--purple)" data-calapplyall="${esc(pos.id)}" title="Replicar estado a todas las unidades">→ Todas</button></div>`
-      : calRowActions(pos.processes, pos.id, null);
+      ? `<div class="abtn-group">${calRowActions(pos.processes, prodKey(pos), null)}<button type="button" class="abtn" style="font-size:10px;border-color:rgba(138,122,196,0.3);color:var(--purple)" data-calapplyall="${esc(prodKey(pos))}" title="Replicar estado a todas las unidades">→ Todas</button></div>`
+      : calRowActions(pos.processes, prodKey(pos), null);
 
-    let mainRow=`<tr ${hasSubs?`data-expand="${esc(pos.id)}" style="cursor:pointer"`:''}>
+    let mainRow=`<tr ${hasSubs?`data-expand="${esc(prodKey(pos))}" style="cursor:pointer"`:''}>
       <td class="mono" style="color:var(--accent);font-weight:500">${esc(pos.prioridad||'—')}</td>
       <td class="mono" style="font-weight:500">${expandBtn} ${esc(pos.id)}</td>
       <td><div style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(pos.denom)}">${esc(pos.denom)}</div></td>
@@ -2287,7 +2294,7 @@ function renderPosViewDefault(ot){
       subRows=subsToShow.map((sub,_)=>{
         const realIdx=pos.subs.indexOf(sub);
         const subPipeline=renderPipeline(sub.processes, CAL_SHORT);
-        const subAction=calRowActions(sub.processes, pos.id, realIdx);
+        const subAction=calRowActions(sub.processes, prodKey(pos), realIdx);
         const subLote=ot.lotes?.find(l=>l.id===sub.loteId);
         return `<tr class="sub-row">
           <td></td>
@@ -2363,7 +2370,7 @@ function renderPosViewDefault(ot){
         ? `<div style="text-align:center;padding:3rem 1rem;color:var(--text3);font-family:var(--mono);font-size:12px">Sin resultados.</div>`
         : filtered.map(pos=>{
             const hasSubs=pos.subs&&pos.subs.length>0;
-            const isExpanded=!!state.expanded[pos.id];
+            const isExpanded=!!state.expanded[prodKey(pos)];
             const ext=isExt(pos);
             const pipeline=hasSubs
               ? renderPipeline(CAL_PROCS.map((_,i)=>{
@@ -2374,18 +2381,18 @@ function renderPosViewDefault(ot){
                   return {status:allOk?'approved':anyRej?'rejected':'pending',history:anyPartial&&!allOk&&!anyRej?[{}]:[]};
                 }),CAL_SHORT)
               : renderPipeline(pos.processes,CAL_SHORT);
-            const mainAction=calRowActions(pos.processes,pos.id,null);
+            const mainAction=calRowActions(pos.processes, prodKey(pos),null);
 
             const allSubsAction = hasSubs ? `<div class="abtn-group">
               ${CAL_PROCS.map((n,i)=>{
                 const allApproved=pos.subs.every(s=>s.processes[i]?.status==='approved');
                 if(allApproved){
-                  return `<button type="button" class="abtn corr" style="min-height:38px;padding:6px 10px" data-act="calapplyall-proc" data-id="${esc(pos.id)}" data-pidx="${i}">Mod. ${CAL_SHORT[i]}</button>`;
+                  return `<button type="button" class="abtn corr" style="min-height:38px;padding:6px 10px" data-act="calapplyall-proc" data-id="${esc(prodKey(pos))}" data-pidx="${i}">Mod. ${CAL_SHORT[i]}</button>`;
                 } else {
-                  return `<button type="button" class="abtn" style="min-height:38px;padding:6px 10px" data-act="calapplyall-proc" data-id="${esc(pos.id)}" data-pidx="${i}">${CAL_SHORT[i]}</button>`;
+                  return `<button type="button" class="abtn" style="min-height:38px;padding:6px 10px" data-act="calapplyall-proc" data-id="${esc(prodKey(pos))}" data-pidx="${i}">${CAL_SHORT[i]}</button>`;
                 }
               }).join('')}
-              <button type="button" class="abtn" style="min-height:38px;padding:6px 10px;border-color:rgba(138,122,196,0.3);color:var(--purple)" data-expand-inline="${esc(pos.id)}" title="Ver unidades">
+              <button type="button" class="abtn" style="min-height:38px;padding:6px 10px;border-color:rgba(138,122,196,0.3);color:var(--purple)" data-expand-inline="${esc(prodKey(pos))}" title="Ver unidades">
                 <svg viewBox="0 0 16 16" fill="none" style="width:12px;height:12px;display:inline-block;vertical-align:middle"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
             </div>` : '';
@@ -2423,7 +2430,7 @@ function renderPosViewDefault(ot){
               <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
                 <div>
                   <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
-                    ${hasSubs?`<button type="button" class="expand-btn ${isExpanded?'open':''}" data-expand="${esc(pos.id)}"><svg viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`:''}
+                    ${hasSubs?`<button type="button" class="expand-btn ${isExpanded?'open':''}" data-expand="${esc(prodKey(pos))}"><svg viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`:''}
                     <span style="font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text)">${esc(pos.id)}</span>
                     ${pos.prioridad?`<span class="chip" style="background:rgba(79,142,247,0.1);color:var(--accent2);border-radius:20px;font-family:var(--mono);font-size:10px">${esc(pos.prioridad)}</span>`:''}
                     ${ext?`<span class="chip" style="background:rgba(138,122,196,0.12);color:var(--purple);border-radius:20px;font-family:var(--mono);font-size:10px">${esc(pos.construye)}</span>`:''}
@@ -2458,7 +2465,7 @@ function renderPosViewDefault(ot){
                   </div>
                   <div style="display:flex;justify-content:space-between;align-items:center">
                     <div class="pipeline">${renderPipeline(sub.processes,CAL_SHORT)}</div>
-                    <div class="abtn-group">${calRowActions(sub.processes,pos.id,i)}</div>
+                    <div class="abtn-group">${calRowActions(sub.processes, prodKey(pos),i)}</div>
                   </div>
                 </div>`;
                 }).join('');
@@ -2638,7 +2645,7 @@ function renderModal(){
 
   const ot=activeOt();
   const positions=ot?.positions||[];
-  const pos=positions.find(p=>p.id===m.posId);
+  const pos=findPos(ot, m.posId);
   if(!pos) return '';
   const ap=pos.activeProc;
 
@@ -2980,7 +2987,7 @@ function renderLoteModal(){
 function renderLoteAsignModal(){
   const m=state.modal; if(!m||m.type!=='lote-asignar') return '';
   const ot=activeOt(); if(!ot) return '';
-  const pos=ot.positions.find(p=>p.id===m.posId); if(!pos) return '';
+  const pos=findPos(ot, m.posId); if(!pos) return '';
   const lotes=ot.lotes||[];
   const loteActual=pos.loteId?lotes.find(l=>l.id===pos.loteId):null;
   const loteOpts=lotes.map(l=>`<option value="${esc(l.id)}" ${pos.loteId===l.id?'selected':''}>${esc(l.nombre)}</option>`).join('');
@@ -3008,7 +3015,7 @@ function renderLoteAsignSubModal(){
   const m=state.modal; if(!m||m.type!=='lote-asignar-sub') return '';
   const ot=activeOt(); if(!ot) return '';
   const [parentId,subId]=m.spid.split('::');
-  const pos=ot.positions.find(p=>p.id===parentId); if(!pos) return '';
+  const pos=findPos(ot, parentId); if(!pos) return '';
   const sub=pos.subs?.find(s=>s.subId===subId); if(!sub) return '';
   const lotes=ot.lotes||[];
   const loteActual=sub.loteId?lotes.find(l=>l.id===sub.loteId):null;
@@ -3192,7 +3199,7 @@ function bind(){
   on('btn-sub-lote-ok','click',()=>{
     const ot=activeOt(); if(!ot) return;
     const [parentId,subId]=state.modal.spid.split('::');
-    const pos=ot.positions.find(p=>p.id===parentId); if(!pos) return;
+    const pos=findPos(ot, parentId); if(!pos) return;
     const sub=pos.subs?.find(s=>s.subId===subId); if(!sub) return;
     const loteNuevo=(document.getElementById('inp-lote-nuevo')?.value||'').trim();
     const loteExistente=document.getElementById('sel-lote-existente')?.value||'';
@@ -3218,7 +3225,7 @@ function bind(){
   on('btn-sub-lote-quitar','click',()=>{
     const ot=activeOt(); if(!ot) return;
     const [parentId,subId]=state.modal.spid.split('::');
-    const pos=ot.positions.find(p=>p.id===parentId); if(!pos) return;
+    const pos=findPos(ot, parentId); if(!pos) return;
     const sub=pos.subs?.find(s=>s.subId===subId); if(!sub) return;
     const spid=state.modal.spid;
     if(sub.loteId){
@@ -3239,7 +3246,7 @@ function bind(){
   });
   on('btn-lote-asignar-ok','click',()=>{
     const ot=activeOt(); if(!ot) return;
-    const pos=ot.positions.find(p=>p.id===state.modal.posId); if(!pos) return;
+    const pos=findPos(ot, state.modal.posId); if(!pos) return;
     const loteNuevo=(document.getElementById('inp-lote-nuevo')?.value||'').trim();
     const loteExistente=document.getElementById('sel-lote-existente')?.value||'';
     if(!loteNuevo && !loteExistente){ alert('Elegí o creá un lote.'); return; }
@@ -3264,7 +3271,7 @@ function bind(){
   });
   on('btn-lote-quitar','click',()=>{
     const ot=activeOt(); if(!ot) return;
-    const pos=ot.positions.find(p=>p.id===state.modal.posId); if(!pos) return;
+    const pos=findPos(ot, state.modal.posId); if(!pos) return;
     if(pos.loteId){
       const lote=ot.lotes?.find(l=>l.id===pos.loteId);
       if(lote) lote.posIds=lote.posIds.filter(id=>id!==pos.id);
@@ -3755,7 +3762,7 @@ function bind(){
     b.addEventListener('click',()=>{
       const ot=activeOt(); if(!ot) return;
       const posId=b.dataset.applyall;
-      const pos=ot.positions.find(p=>p.id===posId); if(!pos||!pos.subs) return;
+      const pos=findPos(ot, posId); if(!pos||!pos.subs) return;
       if(!ot.prodData) ot.prodData={};
       const parentData={...ot.prodData[posId]||{}};
       pos.subs.forEach((_,i)=>{
@@ -3789,7 +3796,7 @@ function bind(){
     b.addEventListener('click',()=>{
       const ot=activeOt(); if(!ot) return;
       const posId=b.dataset.calapplyall;
-      const pos=ot.positions.find(p=>p.id===posId); if(!pos||!pos.subs) return;
+      const pos=findPos(ot, posId); if(!pos||!pos.subs) return;
       pos.subs.forEach(sub=>{
         sub.processes=pos.processes.map(p=>({...p}));
         let next=0;
@@ -3833,8 +3840,8 @@ function bind(){
 
   // actions
   document.querySelectorAll('[data-act]').forEach(b=>{
-    if(b.disabled) return;
     b.addEventListener('click',()=>{
+      if(b.classList.contains('abtn-disabled')) return;
       const act=b.dataset.act;
       const id=b.dataset.id;
       const subIdx=b.dataset.subidx!==undefined?parseInt(b.dataset.subidx):null;
@@ -3855,14 +3862,14 @@ function bind(){
   on('btn-confirm-assign','click',()=>{
     const w=$('sel-w').value;
     const ot=activeOt(); if(!ot) return;
-    const pos=ot.positions.find(p=>p.id===state.modal.posId);
+    const pos=findPos(ot, state.modal.posId);
     if(pos){ pos.processes[pos.activeProc].assignee=w; pos.processes[pos.activeProc].status='pending'; }
     state.modal=null; savePersisted(); render();
   });
   on('btn-confirm-corr','click',()=>{
     if(state.corrTarget===null) return;
     const ot=activeOt(); if(!ot) return;
-    const pos=ot.positions.find(p=>p.id===state.modal.posId);
+    const pos=findPos(ot, state.modal.posId);
     if(pos){
       for(let i=state.corrTarget;i<PROCS.length;i++) pos.processes[i]={status:'pending',assignee:null,obs:''};
       pos.activeProc=state.corrTarget;
@@ -3891,7 +3898,7 @@ function bind(){
   on('btn-save-edit','click',()=>{
     const newText=document.getElementById('inp-edit-obs')?.value||'';
     const ot=activeOt(); if(!ot) return;
-    const pos=ot.positions.find(p=>p.id===state.modal.posId); if(!pos) return;
+    const pos=findPos(ot, state.modal.posId); if(!pos) return;
     const subIdx=state.modal.subIdx!==undefined?state.modal.subIdx:null;
     const processes=getProcesses(pos,subIdx);
     const proc=processes[state.modal.procIdx];
@@ -3912,7 +3919,7 @@ function doModificar(result){
   })();
   if(!author) return;
   const ot=activeOt(); if(!ot) return;
-  const pos=ot.positions.find(p=>p.id===state.modal.posId); if(!pos) return;
+  const pos=findPos(ot, state.modal.posId); if(!pos) return;
   const pidx=state.modal.procIdx;
   const subIdx=state.modal.subIdx!==undefined?state.modal.subIdx:null;
   const processes=getProcesses(pos,subIdx);
@@ -3967,7 +3974,7 @@ function doAnular(){
   if(!author){ alert('Ingresá tu nombre.'); return; }
   if(!obs.trim()){ alert('La causa de anulación es obligatoria.'); return; }
   const ot=activeOt(); if(!ot) return;
-  const pos=ot.positions.find(p=>p.id===state.modal.posId); if(!pos) return;
+  const pos=findPos(ot, state.modal.posId); if(!pos) return;
   const pidx=state.modal.procIdx;
   const subIdx=state.modal.subIdx!==undefined?state.modal.subIdx:null;
   const processes=getProcesses(pos,subIdx);
@@ -4011,7 +4018,7 @@ function doPartial(){
   if(!author) return;
   if(!obs.trim()){ alert('Escribí al menos una observación para registrar el control parcial.'); return; }
   const ot=activeOt(); if(!ot) return;
-  const pos=ot.positions.find(p=>p.id===state.modal.posId); if(!pos) return;
+  const pos=findPos(ot, state.modal.posId); if(!pos) return;
   const pidx=state.modal.procIdx!==undefined?state.modal.procIdx:pos.activeProc;
   const subIdx=state.modal.subIdx!==undefined?state.modal.subIdx:null;
   const applyAll=state.modal.applyAllSubs&&pos.subs&&pos.subs.length>0;
@@ -4045,7 +4052,7 @@ function doInspect(result){
     if(!author){ alert('Ingresá tu nombre como inspector.'); return; }
   }
   const ot=activeOt(); if(!ot) return;
-  const pos=ot.positions.find(p=>p.id===state.modal.posId); if(!pos) return;
+  const pos=findPos(ot, state.modal.posId); if(!pos) return;
   const pidx=state.modal.procIdx!==undefined?state.modal.procIdx:pos.activeProc;
   const subIdx=state.modal.subIdx!==undefined?state.modal.subIdx:null;
   const applyAll=state.modal.applyAllSubs&&pos.subs&&pos.subs.length>0;
@@ -4078,7 +4085,7 @@ function doInspect(result){
     processes[pidx].status=result;
     processes[pidx].obs=obs;
     if(isPIN && loteId && result==='approved'){
-      const targetPos=ot.positions.find(p=>p.id===posId);
+      const targetPos=findPos(ot, posId);
       if(targetPos){
         if(subIdx!==null && targetPos.subs?.[subIdx]){
           // assign to sub-posicion
