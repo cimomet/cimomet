@@ -2829,12 +2829,54 @@ function renderPinturaView(ot){
     ? `<div style="text-align:center;padding:2rem 1rem;color:var(--text3);font-family:var(--mono);font-size:12px">Los lotes se crean al inspeccionar PIN en Posiciones.</div>`
     : loteOpts.map(l=>{
         let totalUnits=0,rejUnits=0;
-        (l.posIds||[]).forEach(pid=>{totalUnits++;if((l.posEstados?.[pid]||'pendiente')==='rechazado') rejUnits++;});
+        (l.posIds||[]).forEach(pid=>{
+          totalUnits++;
+          const p=positions.find(x=>x.uid===pid)||positions.find(x=>x.id===pid);
+          // if position has subs, aggregate from subs
+          if(p && p.subs && p.subs.length>0){
+            const subEstados=p.subs.map(s=>{
+              const spid=`${pid}::${s.subId}`;
+              return l.subPosEstados?.[spid]||'pendiente';
+            });
+            if(subEstados.some(e=>e==='rechazado')) rejUnits++;
+          } else {
+            if((l.posEstados?.[pid]||'pendiente')==='rechazado') rejUnits++;
+          }
+        });
         (l.subPosIds||[]).forEach(spid=>{totalUnits++;if((l.subPosEstados?.[spid]||'pendiente')==='rechazado') rejUnits++;});
         const isSelected=l.id===filterLote;
         const estadoColor=l.estado==='aprobado'?'var(--green)':l.estado==='rechazado'?'var(--red)':'var(--amber)';
         const estadoLabel=l.estado==='aprobado'?'Aprobado':l.estado==='rechazado'?'Rechazado':'Pendiente';
         const hasMedidas=l.min||l.max||l.promedio;
+        // count PENDING observations (not yet "raised")
+        // pos obs: only count if the position is NOT aprobada
+        // sub obs: only count if the sub is NOT aprobada
+        // historial notes: only count if not levantada
+        let pendingObsCount=0;
+        if(l.posObs){
+          Object.entries(l.posObs).forEach(([pid,v])=>{
+            if(!v || !String(v).trim()) return;
+            // determine effective state of this position (considering subs aggregate)
+            const p=positions.find(x=>x.uid===pid)||positions.find(x=>x.id===pid);
+            let eff='pendiente';
+            if(p && p.subs && p.subs.length>0){
+              const sEsts=p.subs.map(s=>l.subPosEstados?.[`${pid}::${s.subId}`]||'pendiente');
+              eff = sEsts.every(e=>e==='aprobado') ? 'aprobado'
+                  : sEsts.some(e=>e==='rechazado') ? 'rechazado' : 'pendiente';
+            } else {
+              eff=l.posEstados?.[pid]||'pendiente';
+            }
+            if(eff!=='aprobado') pendingObsCount++;
+          });
+        }
+        if(l.subPosObs){
+          Object.entries(l.subPosObs).forEach(([spid,v])=>{
+            if(!v || !String(v).trim()) return;
+            const sEst=l.subPosEstados?.[spid]||'pendiente';
+            if(sEst!=='aprobado') pendingObsCount++;
+          });
+        }
+        if(l.historial) pendingObsCount+=l.historial.filter(h=>h.action==='note' && !h.levantada).length;
         return `<div style="border-radius:var(--r2);border:1.5px solid ${isSelected?'var(--accent)':'var(--border)'};overflow:hidden;margin-bottom:8px">
           <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer;background:var(--bg2)" data-sel-lote="${esc(l.id)}">
             <div style="flex:1;min-width:0">
@@ -2842,6 +2884,7 @@ function renderPinturaView(ot){
                 <span style="font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text)">${esc(l.nombre)}</span>
                 <span style="font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:20px;border:1px solid ${estadoColor};color:${estadoColor}">${estadoLabel}</span>
                 ${rejUnits>0?`<span style="font-family:var(--mono);font-size:10px;color:var(--red)">⚠ ${rejUnits} rechazada${rejUnits!==1?'s':''}</span>`:''}
+                ${pendingObsCount>0?`<span style="font-family:var(--mono);font-size:10px;color:var(--amber);background:rgba(255,178,77,0.12);padding:2px 8px;border-radius:20px;border:1px solid rgba(255,178,77,0.3)" title="Observaciones pendientes de levantar">⚠ ${pendingObsCount} obs. pendiente${pendingObsCount!==1?'s':''}</span>`:''}
               </div>
               <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:3px">${totalUnits} unidad${totalUnits!==1?'es':''} · ${esc(l.fecha)}${hasMedidas?` · Mín:${l.min||'—'} Máx:${l.max||'—'} Prom:${l.promedio||'—'}`:''}</div>
             </div>
@@ -2909,7 +2952,7 @@ function renderLoteDetalle(l, positions){
       const rejCount=subEstados.filter(e=>e==='rechazado').length;
       const pendCount=subEstados.filter(e=>e==='pendiente').length;
       estLabel=`<span style="color:var(--green)">${okCount}✓</span> · <span style="color:var(--red)">${rejCount}✗</span> · <span style="color:var(--text3)">${pendCount}⏳</span>`;
-      obs='';
+      obs=l.posObs?.[pid]||'';
     } else {
       est=l.posEstados?.[pid]||'pendiente';
       estColor=est==='aprobado'?'var(--green)':est==='rechazado'?'var(--red)':'var(--text3)';
@@ -2929,7 +2972,17 @@ function renderLoteDetalle(l, positions){
       ${est!=='rechazado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-pos-est="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="rechazado">✗</button>`:''}
     `;
 
-    posRowsArr.push(`<div style="padding:10px 14px;border-top:1px solid var(--border);background:var(--bg2)">
+    // determine if this position's observation is "pending" (not yet resolved by approval)
+    const obsPending = obs && est!=='aprobado';
+    const rowStyle = obsPending
+      ? 'padding:10px 14px;border-top:1px solid var(--border);background:var(--bg2);border-left:3px solid var(--amber)'
+      : 'padding:10px 14px;border-top:1px solid var(--border);background:var(--bg2)';
+    const obsStyle = obsPending
+      ? 'font-size:12px;color:var(--amber);margin-bottom:6px;font-style:italic;font-weight:600;background:rgba(255,178,77,0.08);padding:6px 10px;border-radius:var(--r);border:1px solid rgba(255,178,77,0.2)'
+      : 'font-size:12px;color:var(--text2);margin-bottom:6px;font-style:italic';
+    const obsPrefix = obsPending ? '⚠ ' : '';
+
+    posRowsArr.push(`<div style="${rowStyle}">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
         <div style="display:flex;align-items:center">
           ${expandBtn}
@@ -2939,7 +2992,7 @@ function renderLoteDetalle(l, positions){
         </div>
         <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:${estColor}">${estLabel}</span>
       </div>
-      ${obs?`<div style="font-size:12px;color:var(--text2);margin-bottom:6px;font-style:italic">"${esc(obs)}"</div>`:''}
+      ${obs?`<div style="${obsStyle}">${obsPrefix}"${esc(obs)}"</div>`:''}
       <div class="abtn-group">${actionButtons}</div>
     </div>`);
 
@@ -2951,14 +3004,22 @@ function renderLoteDetalle(l, positions){
         const sColor=sEst==='aprobado'?'var(--green)':sEst==='rechazado'?'var(--red)':'var(--text3)';
         const sLabel=sEst==='aprobado'?'✓ Aprobado':sEst==='rechazado'?'✗ Rechazado':'Pendiente';
         const sObs=l.subPosObs?.[spid]||'';
-        posRowsArr.push(`<div style="padding:8px 14px 8px 42px;border-top:1px solid var(--border);background:var(--bg3)">
+        const subObsPending = sObs && sEst!=='aprobado';
+        const subRowStyle = subObsPending
+          ? 'padding:8px 14px 8px 42px;border-top:1px solid var(--border);background:var(--bg3);border-left:3px solid var(--amber)'
+          : 'padding:8px 14px 8px 42px;border-top:1px solid var(--border);background:var(--bg3)';
+        const subObsStyle = subObsPending
+          ? 'font-size:11px;color:var(--amber);margin-bottom:6px;font-style:italic;font-weight:600;background:rgba(255,178,77,0.08);padding:5px 8px;border-radius:var(--r);border:1px solid rgba(255,178,77,0.2)'
+          : 'font-size:11px;color:var(--text2);margin-bottom:6px;font-style:italic';
+        const subObsPrefix = subObsPending ? '⚠ ' : '';
+        posRowsArr.push(`<div style="${subRowStyle}">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
             <div>
               <span style="font-family:var(--mono);font-size:12px;color:var(--accent2)">↳ ${esc(sub.subId)}</span>
             </div>
             <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:${sColor}">${sLabel}</span>
           </div>
-          ${sObs?`<div style="font-size:11px;color:var(--text2);margin-bottom:6px;font-style:italic">"${esc(sObs)}"</div>`:''}
+          ${sObs?`<div style="${subObsStyle}">${subObsPrefix}"${esc(sObs)}"</div>`:''}
           <div class="abtn-group">
             <button type="button" class="abtn" style="font-size:11px" data-lote-sub-obs="${esc(l.id)}" data-spid="${esc(spid)}">Obs.</button>
             ${sEst!=='aprobado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="aprobado">✓</button>`:''}
@@ -2994,11 +3055,28 @@ function renderLoteDetalle(l, positions){
 
   // historial
   const histHtml=(l.historial||[]).length
-    ? (l.historial||[]).map(h=>`<div class="history-item" style="margin:0;border-radius:0;border-bottom:1px solid var(--border)">
-        <div class="history-meta"><span class="history-author">${esc(h.author||'—')}</span><span>${esc(h.date||'')}</span>${historyTag(h.action)}</div>
-        <div class="history-text">${esc(h.text||'—')}</div>
-        ${h.min||h.max||h.promedio?`<div style="font-family:var(--mono);font-size:10px;color:var(--text3)">Mín:${h.min||'—'} Máx:${h.max||'—'} Prom:${h.promedio||'—'}</div>`:''}
-      </div>`).join('')
+    ? (l.historial||[]).map((h,hidx)=>{
+        const isNote=h.action==='note';
+        const isPending=isNote && !h.levantada;
+        const itemStyle = isPending
+          ? 'margin:0;border-radius:0;border-bottom:1px solid var(--border);border-left:3px solid var(--amber);background:rgba(255,178,77,0.05)'
+          : h.levantada
+            ? 'margin:0;border-radius:0;border-bottom:1px solid var(--border);opacity:0.55'
+            : 'margin:0;border-radius:0;border-bottom:1px solid var(--border)';
+        return `<div class="history-item" style="${itemStyle}">
+          <div class="history-meta">
+            <span class="history-author">${esc(h.author||'—')}</span>
+            <span>${esc(h.date||'')}</span>
+            ${historyTag(h.action)}
+            ${isPending?'<span style="font-family:var(--mono);font-size:10px;color:var(--amber);font-weight:600">⚠ PENDIENTE</span>':''}
+            ${h.levantada?`<span style="font-family:var(--mono);font-size:10px;color:var(--green);font-weight:600">✓ LEVANTADA</span>`:''}
+          </div>
+          <div class="history-text"${h.levantada?' style="text-decoration:line-through"':''}>${esc(h.text||'—')}</div>
+          ${h.min||h.max||h.promedio?`<div style="font-family:var(--mono);font-size:10px;color:var(--text3)">Mín:${h.min||'—'} Máx:${h.max||'—'} Prom:${h.promedio||'—'}</div>`:''}
+          ${h.levantada?`<div style="font-family:var(--mono);font-size:10px;color:var(--green);margin-top:4px">Levantada por ${esc(h.levantadaPor||'—')} el ${esc(h.levantadaFecha||'—')}</div>`:''}
+          ${isPending?`<div style="margin-top:8px"><button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-obs-levantar="${esc(l.id)}" data-hidx="${hidx}">✓ Levantar</button></div>`:''}
+        </div>`;
+      }).join('')
     : `<div style="padding:10px 14px;font-family:var(--mono);font-size:11px;color:var(--text3);border-top:1px solid var(--border)">Sin historial</div>`;
 
   return `
@@ -3286,6 +3364,25 @@ function bind(){
         const spid=`${posId}::${sub.subId}`;
         lote.subPosEstados[spid]=est;
       });
+      savePersisted(); render();
+    });
+  });
+
+  // levantar observación general del lote (historial note)
+  document.querySelectorAll('[data-lote-obs-levantar]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const ot=activeOt(); if(!ot) return;
+      const lote=ot.lotes?.find(l=>l.id===b.dataset.loteObsLevantar); if(!lote) return;
+      const hidx=parseInt(b.dataset.hidx);
+      const h=lote.historial?.[hidx];
+      if(!h) return;
+      // determine the inspector/author
+      const who = state.role==='calidad' && state.inspectorActivo
+        ? state.inspectorActivo.nombre
+        : (state.lastAuthor||'Admin');
+      h.levantada=true;
+      h.levantadaPor=who;
+      h.levantadaFecha=nowStr();
       savePersisted(); render();
     });
   });
