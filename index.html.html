@@ -763,8 +763,62 @@ function scheduleSave(){
   _saveTimer = setTimeout(()=>pushToSupabase(), 800);
 }
 
+// helper: count how much "work" exists in OTs (positions + avances + inspections + lotes)
+function countOtsWorkload(ots){
+  let n = 0;
+  if(!Array.isArray(ots)) return 0;
+  ots.forEach(ot=>{
+    if(!ot) return;
+    n += (ot.positions?.length||0);
+    n += (ot.draftPositions?.length||0);
+    n += Object.keys(ot.prodData||{}).length * 3;
+    n += Object.keys(ot.calExtData||{}).length * 3;
+    n += (ot.lotes?.length||0) * 5;
+    // count inspection actions stored in process history
+    (ot.positions||[]).forEach(p=>{
+      (p.processes||[]).forEach(pr=>{ n += (pr.history?.length||0); if(pr.status&&pr.status!=='pending') n++; });
+      (p.subs||[]).forEach(s=>{
+        (s.processes||[]).forEach(pr=>{ n += (pr.history?.length||0); if(pr.status&&pr.status!=='pending') n++; });
+      });
+    });
+  });
+  return n;
+}
+
+let _lastPulledStamp = 0;
+let _lastPushedAt = 0;
+
 async function pushToSupabase(){
   // sync OTs and inspectores; role/theme are per-device
+  const localWork = countOtsWorkload(state.ots);
+  // SAFETY: check remote first; if remote has significantly more data than local, do NOT overwrite
+  // (this can happen if local was just initialized or migration corrupted data)
+  try {
+    const res = await fetch(`${SUPA_URL}/rest/v1/ots?id=eq.${OT_ROW_ID}&select=data,updated_at`, {
+      headers: SUPA_HEADERS
+    });
+    if(res.ok){
+      const rows = await res.json();
+      if(rows.length > 0){
+        const remote = rows[0].data;
+        const remoteWork = countOtsWorkload(remote?.ots);
+        // if remote has substantially more work than local, suspect data loss locally — block push
+        // threshold: remote at least 50 units more AND local less than 50% of remote
+        if(remoteWork > 50 && localWork < remoteWork * 0.5){
+          console.warn('[Cimomet] Push BLOQUEADO: el remoto tiene', remoteWork, 'datos vs', localWork, 'local. Evitando borrado accidental.');
+          // try to recover by pulling
+          state.ots = remote.ots;
+          if(Array.isArray(remote.inspectores) && remote.inspectores.length>0){
+            state.inspectores = remote.inspectores;
+          }
+          state.ots.forEach(ot=>migrateProdData(ot));
+          savePrefs(); render();
+          return;
+        }
+      }
+    }
+  } catch(e){ /* ignore — continue with normal push */ }
+
   const payload = {
     ots: state.ots,
     inspectores: state.inspectores||[],
@@ -775,17 +829,21 @@ async function pushToSupabase(){
       headers: { ...SUPA_HEADERS, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ id: OT_ROW_ID, data: payload, updated_at: new Date().toISOString() })
     });
+    _lastPushedAt = Date.now();
   } catch(e){ console.warn('Supabase save error:', e); }
 }
 
 async function pullFromSupabase(){
   try{
-    const res = await fetch(`${SUPA_URL}/rest/v1/ots?id=eq.${OT_ROW_ID}&select=data`, {
+    const res = await fetch(`${SUPA_URL}/rest/v1/ots?id=eq.${OT_ROW_ID}&select=data,updated_at`, {
       headers: SUPA_HEADERS
     });
     if(res.ok){
       const rows = await res.json();
-      if(rows.length > 0) return rows[0].data;
+      if(rows.length > 0){
+        if(rows[0].updated_at) _lastPulledStamp = new Date(rows[0].updated_at).getTime();
+        return rows[0].data;
+      }
     }
   } catch(e){ console.warn('Supabase load error:', e); }
   return null;
@@ -3789,16 +3847,32 @@ function bind(){
       const ot=activeOt(); if(!ot) return;
       const idx=parseInt(inp.dataset.idx); const col=inp.dataset.col;
       const row=ot.draftPositions[idx]; if(!row) return;
+      // ensure row has uid for future syncs
+      if(!row.uid) row.uid=genId();
       const oldQty=Number(row.qty)||0;
       if(col==='qty'||col==='pesoUnit'||col==='pesoTotal') row[col]=inp.value===''?'':Number(inp.value);
       else row[col]=inp.value;
-      // sync to positions if published — match by uid (unique per row), fallback to pos.id
+      // auto-recalculate pesoTotal when qty or pesoUnit changes (if pesoUnit is known)
+      if(col==='qty'||col==='pesoUnit'){
+        const q=Number(row.qty)||0, pu=Number(row.pesoUnit)||0;
+        if(q>0 && pu>0) row.pesoTotal=q*pu;
+      }
+      // sync to positions if published — match by uid (unique per row), fallback to pos.id+index
       if(ot.plPublished){
-        const pos = row.uid
-          ? ot.positions.find(p=>p.uid===row.uid)
-          : ot.positions.find(p=>p.id===row.pos);
+        let pos = ot.positions.find(p=>p.uid===row.uid);
+        if(!pos){
+          // fallback: match by index since draft and positions arrays should be aligned
+          pos = ot.positions[idx];
+          // ensure the uid is propagated
+          if(pos && !pos.uid) pos.uid=row.uid;
+        }
         if(pos){
+          // sync changed field
           pos[col]=row[col];
+          // also sync pesoTotal if it was auto-recalculated
+          if((col==='qty'||col==='pesoUnit') && row.pesoTotal!==undefined){
+            pos.pesoTotal=row.pesoTotal;
+          }
           if(col==='qty'){
             const newQty=Number(row.qty)||0;
             pos.qty=newQty;
@@ -3810,6 +3884,8 @@ function bind(){
               pos.subs=null;
             }
           }
+        } else {
+          console.warn('[pl-cell-input] No se encontró la posición correspondiente para sincronizar', {row, idx});
         }
       }
       savePersisted(); render();
@@ -4622,6 +4698,23 @@ function performReuploadMerge(ot, newRows){
 
   // migrate prodData keys for positions that share pos.id across different prioridades
   state.ots.forEach(ot=>migrateProdData(ot));
+  // daily snapshot backup (keep last 7 days)
+  try{
+    const today = new Date().toISOString().slice(0,10);
+    const snapKey = 'cimomet_snap_'+today;
+    if(!localStorage.getItem(snapKey)){
+      localStorage.setItem(snapKey, JSON.stringify({date:today, ots:state.ots, inspectores:state.inspectores||[]}));
+      // cleanup older than 7 days
+      const cutoff = new Date(); cutoff.setDate(cutoff.getDate()-7);
+      const cutoffKey = 'cimomet_snap_'+cutoff.toISOString().slice(0,10);
+      const toRemove = [];
+      for(let i=0;i<localStorage.length;i++){
+        const k=localStorage.key(i);
+        if(k && k.startsWith('cimomet_snap_') && k<cutoffKey) toRemove.push(k);
+      }
+      toRemove.forEach(k=>localStorage.removeItem(k));
+    }
+  }catch(e){}
   document.body.classList.toggle('light', state.theme==='light');
   // initialize history with current state (replace, don't push)
   history.replaceState({
