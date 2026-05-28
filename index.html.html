@@ -1022,17 +1022,78 @@ function chipCls(s){ return {pending:'chip-pending',in_progress:'chip-progress',
 function chipLbl(s){ return {pending:'Pendiente',in_progress:'En proceso',done:'Despachado',rejected:'Rechazado'}[s]||s; }
 
 const CAL_PROCS=['Armado','Soldadura','Pintura'];
-const CAL_SHORT=['CD','AP','PIN'];
+const CAL_SHORT=['CD','AP','PINT'];
 
-function renderPipeline(processes, shortNames){
+function renderPipeline(processes, shortNames, loteCtx){
+  // loteCtx (optional): {lote, posId, subId|null, otLotes} for computing PINT (i=2) status from lote
   return shortNames.map((sh,i)=>{
     const proc=processes[i];
     let cls='';
-    if(proc.status==='approved') cls='ok';
-    else if(proc.status==='rejected') cls='rej';
-    else if(proc.history&&proc.history.length>0) cls='partial';
-    else if(proc.assignee) cls='wip';
-    return `<div class="pdot ${cls}" title="${esc(sh+': '+(proc.obs||''))}">${sh}</div>`+(i<shortNames.length-1?'<span class="parrow">›</span>':'');
+    let tooltip = sh+': '+(proc.obs||'');
+    // Override PINT (i=2) status based on lote membership and lote state
+    if(i===2 && loteCtx){
+      const {lote, posId, subId, otLotes} = loteCtx;
+      const effectiveLote = lote || (otLotes||[]).find(l=>{
+        if(subId){
+          return (l.subPosIds||[]).includes(`${posId}::${subId}`);
+        } else {
+          return (l.posIds||[]).includes(posId);
+        }
+      });
+      if(!effectiveLote){
+        cls=''; // gray / pending
+        tooltip='PINT: sin lote';
+      } else if(effectiveLote.estado==='rechazado'){
+        cls='rej';
+        tooltip=`PINT: lote ${effectiveLote.nombre} rechazado`;
+      } else if(effectiveLote.estado==='aprobado'){
+        // check per-position state inside the approved lote
+        let posState='aprobado'; // default to aprobado if lote is aprobado
+        let posObs='';
+        if(subId){
+          const spid=`${posId}::${subId}`;
+          posState = effectiveLote.subPosEstados?.[spid] || 'aprobado';
+          posObs = effectiveLote.subPosObs?.[spid] || '';
+        } else {
+          // for parent position: aggregate from subs if any are tracked
+          if(effectiveLote.subPosEstados){
+            // check if any sub of this pos is in lote
+            const subKeys = Object.keys(effectiveLote.subPosEstados).filter(k=>k.startsWith(posId+'::'));
+            if(subKeys.length>0){
+              const states = subKeys.map(k=>effectiveLote.subPosEstados[k]);
+              if(states.some(s=>s==='rechazado')) posState='rechazado';
+              else if(states.every(s=>s==='aprobado')) posState='aprobado';
+              else posState='aprobado'; // pendiente subs in approved lote → still consider aprobado
+            } else {
+              posState = effectiveLote.posEstados?.[posId] || 'aprobado';
+            }
+          } else {
+            posState = effectiveLote.posEstados?.[posId] || 'aprobado';
+          }
+          posObs = effectiveLote.posObs?.[posId] || '';
+        }
+        if(posState==='rechazado'){
+          cls='rej';
+          tooltip=`PINT: posición rechazada en lote ${effectiveLote.nombre}`;
+        } else if(posObs && String(posObs).trim()){
+          cls='wip'; // amber — has observation
+          tooltip=`PINT: observación en lote ${effectiveLote.nombre} — "${posObs}"`;
+        } else {
+          cls='ok';
+          tooltip=`PINT: aprobado en lote ${effectiveLote.nombre}`;
+        }
+      } else {
+        // lote pending → show as assigned (in progress)
+        cls='wip';
+        tooltip=`PINT: asignado al lote ${effectiveLote.nombre}`;
+      }
+    } else {
+      if(proc.status==='approved') cls='ok';
+      else if(proc.status==='rejected') cls='rej';
+      else if(proc.history&&proc.history.length>0) cls='partial';
+      else if(proc.assignee) cls='wip';
+    }
+    return `<div class="pdot ${cls}" title="${esc(tooltip)}">${sh}</div>`+(i<shortNames.length-1?'<span class="parrow">›</span>':'');
   }).join('');
 }
 
@@ -1043,6 +1104,8 @@ function calActionBtns(pos, processes, posId, subIdx){
   if(overall==='done') return '';
   const sidx = subIdx!==null?`data-subidx="${subIdx}"`:'';
   return CAL_PROCS.map((n,i)=>{
+    // PINT (i=2) is managed only via Pintura lotes — no inspect/modify buttons here
+    if(i===2) return '';
     const proc=processes[i];
     const isInspected=proc.status==='approved'||proc.status==='rejected';
     const canInsp=calCanInspect({processes},i);
@@ -2270,6 +2333,8 @@ function renderPosViewDefault(ot){
     if(overall==='done') return '';
     const sidx=subIdx!==null?`data-subidx="${subIdx}"`:'';
     const btns=CAL_PROCS.map((n,i)=>{
+      // PINT (i=2) is managed only via Pintura lotes
+      if(i===2) return '';
       const proc=processes[i];
       const isInspected=proc.status==='approved'||proc.status==='rejected';
       const hasPartial=proc.history&&proc.history.length>0;
@@ -2334,8 +2399,8 @@ function renderPosViewDefault(ot){
             status: allOk?'approved': anyRej?'rejected':'pending',
             history: anyPartial&&!allOk&&!anyRej?[{}]:[]
           };
-        }), CAL_SHORT)
-      : renderPipeline(pos.processes, CAL_SHORT);
+        }), CAL_SHORT, {posId:pos.uid||pos.id, subId:null, otLotes:ot.lotes})
+      : renderPipeline(pos.processes, CAL_SHORT, {posId:pos.uid||pos.id, subId:null, otLotes:ot.lotes});
     const mainAction = hasSubs
       ? `<div class="abtn-group">${calRowActions(pos.processes, prodKey(pos), null)}<button type="button" class="abtn" style="font-size:10px;border-color:rgba(138,122,196,0.3);color:var(--purple)" data-calapplyall="${esc(prodKey(pos))}" title="Replicar estado a todas las unidades">→ Todas</button></div>`
       : calRowActions(pos.processes, prodKey(pos), null);
@@ -2367,7 +2432,7 @@ function renderPosViewDefault(ot){
         : pos.subs;
       subRows=subsToShow.map((sub,_)=>{
         const realIdx=pos.subs.indexOf(sub);
-        const subPipeline=renderPipeline(sub.processes, CAL_SHORT);
+        const subPipeline=renderPipeline(sub.processes, CAL_SHORT, {posId:pos.uid||pos.id, subId:sub.subId, otLotes:ot.lotes});
         const subAction=calRowActions(sub.processes, prodKey(pos), realIdx);
         const subLote=ot.lotes?.find(l=>l.id===sub.loteId);
         return `<tr class="sub-row">
@@ -2453,12 +2518,13 @@ function renderPosViewDefault(ot){
                   const anyRej=subs.some(s=>s.processes[i]?.status==='rejected');
                   const anyPartial=subs.some(s=>(s.processes[i]?.history||[]).length>0);
                   return {status:allOk?'approved':anyRej?'rejected':'pending',history:anyPartial&&!allOk&&!anyRej?[{}]:[]};
-                }),CAL_SHORT)
-              : renderPipeline(pos.processes,CAL_SHORT);
+                }),CAL_SHORT,{posId:pos.uid||pos.id, subId:null, otLotes:ot.lotes})
+              : renderPipeline(pos.processes,CAL_SHORT,{posId:pos.uid||pos.id, subId:null, otLotes:ot.lotes});
             const mainAction=calRowActions(pos.processes, prodKey(pos),null);
 
             const allSubsAction = hasSubs ? `<div class="abtn-group">
               ${CAL_PROCS.map((n,i)=>{
+                if(i===2) return ''; // PINT managed via Pintura lotes
                 const allApproved=pos.subs.every(s=>s.processes[i]?.status==='approved');
                 if(allApproved){
                   return `<button type="button" class="abtn corr" style="min-height:38px;padding:6px 10px" data-act="calapplyall-proc" data-id="${esc(prodKey(pos))}" data-pidx="${i}">Mod. ${CAL_SHORT[i]}</button>`;
@@ -2538,7 +2604,7 @@ function renderPosViewDefault(ot){
                     })()}
                   </div>
                   <div style="display:flex;justify-content:space-between;align-items:center">
-                    <div class="pipeline">${renderPipeline(sub.processes,CAL_SHORT)}</div>
+                    <div class="pipeline">${renderPipeline(sub.processes,CAL_SHORT,{posId:pos.uid||pos.id, subId:sub.subId, otLotes:ot.lotes})}</div>
                     <div class="abtn-group">${calRowActions(sub.processes, prodKey(pos),i)}</div>
                   </div>
                 </div>`;
@@ -2556,6 +2622,7 @@ function renderModal(){
   if(state.modal?.type==='lote-obs'||state.modal?.type==='lote-accion') return renderLoteModal();
   if(state.modal?.type==='lote-asignar') return renderLoteAsignModal();
   if(state.modal?.type==='lote-asignar-sub') return renderLoteAsignSubModal();
+  if(state.modal?.type==='lote-selector') return renderLoteSelectorModal();
   const m=state.modal;
   if(m.type==='inspector-login'){
     const inspectores=state.inspectores||[];
@@ -2952,8 +3019,14 @@ function renderPinturaView(ot){
         </div>`;
       }).join('');
 
+  const canEditPintura = state.role==='calidad' || state.role==='admin';
+  const newLoteBtn = canEditPintura
+    ? `<button type="button" class="btn-ok" id="btn-nuevo-lote" style="padding:8px 16px;font-size:13px">+ Nuevo lote</button>`
+    : '';
+
   return `<div class="topbar">
     <div><div class="topbar-title">Pintura</div><div class="topbar-meta">OT ${esc(pi.ot)} · ${esc(pi.proyecto||'')}</div></div>
+    ${newLoteBtn}
   </div>
   <div class="content">
     <div style="max-width:720px">${loteListHtml}</div>
@@ -2962,46 +3035,120 @@ function renderPinturaView(ot){
 
 function renderLoteDetalle(l, positions){
   // metrics
-  const metrics=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:12px 14px;background:var(--bg3);border-top:1px solid var(--border)">
-    <div>
-      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Mín. medido</div>
-      <input type="text" class="lote-metric-input" data-lote-id="${esc(l.id)}" data-metric="min" value="${esc(l.min||'')}" placeholder="—" style="width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:6px 8px;font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)"/>
-    </div>
-    <div>
-      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Máx. medido</div>
-      <input type="text" class="lote-metric-input" data-lote-id="${esc(l.id)}" data-metric="max" value="${esc(l.max||'')}" placeholder="—" style="width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:6px 8px;font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)"/>
-    </div>
-    <div>
-      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Prom. medido</div>
-      <input type="text" class="lote-metric-input" data-lote-id="${esc(l.id)}" data-metric="promedio" value="${esc(l.promedio||'')}" placeholder="—" style="width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:6px 8px;font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)"/>
-    </div>
-  </div>`;
+  // ── CAPAS DE MEDICIÓN ──
+  // Migrate old min/max/promedio fields to the first capa if no capas exist yet
+  if(!Array.isArray(l.capas)){
+    if(l.min || l.max || l.promedio){
+      l.capas = [{
+        id: 'capa_'+Date.now(),
+        nombre: 'Primer capa',
+        min: l.min||'',
+        max: l.max||'',
+        promedio: l.promedio||'',
+        fecha: l.fecha || nowStr(),
+      }];
+    } else {
+      l.capas = [];
+    }
+  }
+
+  const canEditMeasures = state.role==='calidad' || state.role==='admin';
+
+  const capasHtml = l.capas.length>0
+    ? l.capas.map((c, ci)=>{
+        const inputAttrs = canEditMeasures ? '' : 'readonly disabled';
+        const inputStyle = `width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:6px 8px;font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)${!canEditMeasures?';opacity:0.75':''}`;
+        const deleteBtn = canEditMeasures
+          ? `<button type="button" class="abtn" style="font-size:10px;color:var(--text3);border-color:rgba(120,120,120,0.3);padding:3px 8px" data-lote-capa-borrar="${esc(l.id)}" data-capa-id="${esc(c.id)}" title="Borrar capa">✕</button>`
+          : '';
+        const nombreInput = canEditMeasures
+          ? `<input type="text" class="lote-capa-nombre" data-lote-id="${esc(l.id)}" data-capa-id="${esc(c.id)}" value="${esc(c.nombre||'')}" style="background:transparent;border:none;font-family:var(--mono);font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding:0;width:auto;min-width:90px;max-width:160px" placeholder="Nombre"/>`
+          : `<span style="font-family:var(--mono);font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.08em;font-weight:700">${esc(c.nombre||'Capa '+(ci+1))}</span>`;
+        return `<div style="padding:10px 14px;background:var(--bg3);border-top:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:6px">
+            <div style="display:flex;align-items:center;gap:8px">
+              ${nombreInput}
+              ${c.fecha?`<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(c.fecha)}</span>`:''}
+            </div>
+            ${deleteBtn}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Mín. medido</div>
+              <input type="text" class="lote-capa-input" data-lote-id="${esc(l.id)}" data-capa-id="${esc(c.id)}" data-metric="min" value="${esc(c.min||'')}" placeholder="—" style="${inputStyle}" ${inputAttrs}/>
+            </div>
+            <div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Máx. medido</div>
+              <input type="text" class="lote-capa-input" data-lote-id="${esc(l.id)}" data-capa-id="${esc(c.id)}" data-metric="max" value="${esc(c.max||'')}" placeholder="—" style="${inputStyle}" ${inputAttrs}/>
+            </div>
+            <div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Prom. medido</div>
+              <input type="text" class="lote-capa-input" data-lote-id="${esc(l.id)}" data-capa-id="${esc(c.id)}" data-metric="promedio" value="${esc(c.promedio||'')}" placeholder="—" style="${inputStyle}" ${inputAttrs}/>
+            </div>
+          </div>
+        </div>`;
+      }).join('')
+    : `<div style="padding:10px 14px;font-family:var(--mono);font-size:11px;color:var(--text3);background:var(--bg3);border-top:1px solid var(--border)">Sin mediciones registradas</div>`;
+
+  const addCapaBtn = canEditMeasures
+    ? `<div style="padding:8px 14px;background:var(--bg3);border-top:1px solid var(--border)">
+        <button type="button" class="abtn" style="font-size:11px" data-lote-capa-agregar="${esc(l.id)}">+ Agregar capa</button>
+      </div>`
+    : '';
+
+  const metrics = capasHtml + addCapaBtn;
 
   // actions
   const actions=`<div style="display:flex;gap:8px;flex-wrap:wrap;padding:10px 14px;background:var(--bg3);border-top:1px solid var(--border)">
+    ${canEditLote?`<button type="button" class="abtn" style="color:var(--accent);border-color:rgba(79,142,247,0.3)" data-lote-agregar-piezas="${esc(l.id)}">+ Agregar piezas</button>`:''}
     <button type="button" class="abtn" data-lote-accion="obs" data-lote-id="${esc(l.id)}">+ Observación</button>
     ${l.estado!=='aprobado'?`<button type="button" class="abtn" style="color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-accion="aprobar" data-lote-id="${esc(l.id)}">Aprobar lote</button>`:''}
     ${l.estado!=='rechazado'?`<button type="button" class="abtn" style="color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-accion="rechazar" data-lote-id="${esc(l.id)}">Rechazar lote</button>`:''}
     <button type="button" class="abtn" style="color:var(--text3);border-color:rgba(120,120,120,0.3)" data-lote-accion="borrar" data-lote-id="${esc(l.id)}">Borrar</button>
   </div>`;
 
-  // positions
-  const posRowsArr=[];
+  // ── BUILD position display structure ──
+  // Group loose subs (from subPosIds) by their parent so they show under a single header
+  // Sub-positions from subPosIds keep their parent grouping; sub-positions from posIds-entry are also grouped
+  // canEdit: only calidad/admin can edit, control/produccion can view
+  const canEditLote = state.role==='calidad' || state.role==='admin';
+
+  // map parentId -> { p, viaPosIds:bool, subsInLote:[subId,...]|null }
+  const groups = new Map();
   (l.posIds||[]).forEach(pid=>{
     const p=positions.find(x=>x.uid===pid)||positions.find(x=>x.id===pid); if(!p) return;
+    // when assigned via posIds, all subs are in the lote (if any)
+    groups.set(pid, {p, parentKey:pid, viaPosIds:true, subsInLote: p.subs ? p.subs.map(s=>s.subId) : null});
+  });
+  (l.subPosIds||[]).forEach(spid=>{
+    const [parentKey,subId]=spid.split('::');
+    const p=positions.find(x=>x.uid===parentKey)||positions.find(x=>x.id===parentKey); if(!p) return;
+    const existing = groups.get(parentKey);
+    if(existing){
+      // already grouped (either via posIds or via earlier sub); add this sub
+      if(!existing.subsInLote) existing.subsInLote=[];
+      if(!existing.subsInLote.includes(subId)) existing.subsInLote.push(subId);
+    } else {
+      groups.set(parentKey, {p, parentKey, viaPosIds:false, subsInLote:[subId]});
+    }
+  });
+
+  const posRowsArr=[];
+  groups.forEach((g, pid)=>{
+    const p = g.p;
     const qty=Number(p.qty)||1;
-    const hasSubs=qty>1 && p.subs && p.subs.length>0;
+    const subsInLote = g.subsInLote||[];
+    const hasSubs = subsInLote.length>0;
+    // if only one sub and qty=1, treat as simple position
+    const treatAsSimple = !hasSubs;
     const expandKey=`lotePos__${l.id}__${pid}`;
+    // auto-expand if any sub has obs pending or if user has expanded
     const isExpanded=!!state.expanded[expandKey];
 
-    // aggregate state from subs if expanded
+    // aggregate state
     let est, estColor, estLabel, obs;
     if(hasSubs){
-      // aggregate state from sub-positions
-      const subEstados=p.subs.map(s=>{
-        const spid=`${pid}::${s.subId}`;
-        return l.subPosEstados?.[spid]||'pendiente';
-      });
+      const subEstados=subsInLote.map(sid=>l.subPosEstados?.[`${pid}::${sid}`]||'pendiente');
       const allOk=subEstados.every(e=>e==='aprobado');
       const anyRej=subEstados.some(e=>e==='rechazado');
       est=allOk?'aprobado':anyRej?'rechazado':'pendiente';
@@ -3020,17 +3167,25 @@ function renderLoteDetalle(l, positions){
 
     const expandBtn=hasSubs?`<button type="button" class="expand-btn ${isExpanded?'open':''}" data-expand-lote-pos="${esc(expandKey)}" style="margin-right:6px"><svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`:'';
 
-    const actionButtons=hasSubs?`
+    // header info: if not all subs are in lote, show "X de N unidades"
+    const subsCountInfo = hasSubs
+      ? (g.viaPosIds && subsInLote.length===(p.subs?.length||0)
+          ? `×${subsInLote.length}`
+          : `${subsInLote.length} de ${qty}`)
+      : `×${qty}`;
+
+    const editingButtons = canEditLote ? (hasSubs?`
       <button type="button" class="abtn" style="font-size:11px" data-lote-pos-obs="${esc(l.id)}" data-pos-id="${esc(pid)}">Obs. lote</button>
-      <button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-pos-est-all="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="aprobado" title="Aprobar todas las unidades">✓ Todas</button>
-      <button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-pos-est-all="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="rechazado" title="Rechazar todas las unidades">✗ Todas</button>
+      <button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-pos-est-all="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="aprobado" title="Aprobar todas las unidades de este lote">✓ Todas</button>
+      <button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-pos-est-all="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="rechazado" title="Rechazar todas las unidades de este lote">✗ Todas</button>
+      <button type="button" class="abtn" style="font-size:11px;color:var(--text3);border-color:rgba(120,120,120,0.3)" data-lote-pos-quitar="${esc(l.id)}" data-pos-id="${esc(pid)}" title="Quitar todas las unidades de este lote">Borrar</button>
     `:`
       <button type="button" class="abtn" style="font-size:11px" data-lote-pos-obs="${esc(l.id)}" data-pos-id="${esc(pid)}">Obs.</button>
       ${est!=='aprobado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-pos-est="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="aprobado">✓</button>`:''}
       ${est!=='rechazado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-pos-est="${esc(l.id)}" data-pos-id="${esc(pid)}" data-est="rechazado">✗</button>`:''}
-    `;
+      <button type="button" class="abtn" style="font-size:11px;color:var(--text3);border-color:rgba(120,120,120,0.3)" data-lote-pos-quitar="${esc(l.id)}" data-pos-id="${esc(pid)}" title="Quitar del lote">Borrar</button>
+    `) : '';
 
-    // determine if this position's observation is "pending" (not yet resolved by approval)
     const obsPending = obs && est!=='aprobado';
     const rowStyle = obsPending
       ? 'padding:10px 14px;border-top:1px solid var(--border);background:var(--bg2);border-left:3px solid var(--amber)'
@@ -3046,18 +3201,20 @@ function renderLoteDetalle(l, positions){
           ${expandBtn}
           <span style="font-family:var(--mono);font-size:13px;font-weight:700">${esc(p.id)}</span>
           <span style="font-size:12px;color:var(--text2);margin-left:8px">${esc(p.denom)}</span>
-          <span style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-left:6px">×${qty}</span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-left:6px">${subsCountInfo}</span>
         </div>
         <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:${estColor}">${estLabel}</span>
       </div>
       ${obs?`<div style="${obsStyle}">${obsPrefix}"${esc(obs)}"</div>`:''}
-      <div class="abtn-group">${actionButtons}</div>
+      ${editingButtons?`<div class="abtn-group">${editingButtons}</div>`:''}
     </div>`);
 
-    // expanded sub-positions
+    // expanded sub-positions — ONLY those in the lote
     if(hasSubs && isExpanded){
-      p.subs.forEach(sub=>{
-        const spid=`${pid}::${sub.subId}`;
+      subsInLote.forEach(sid=>{
+        const sub = p.subs?.find(s=>s.subId===sid);
+        if(!sub) return;
+        const spid=`${pid}::${sid}`;
         const sEst=l.subPosEstados?.[spid]||'pendiente';
         const sColor=sEst==='aprobado'?'var(--green)':sEst==='rechazado'?'var(--red)':'var(--text3)';
         const sLabel=sEst==='aprobado'?'✓ Aprobado':sEst==='rechazado'?'✗ Rechazado':'Pendiente';
@@ -3070,6 +3227,14 @@ function renderLoteDetalle(l, positions){
           ? 'font-size:11px;color:var(--amber);margin-bottom:6px;font-style:italic;font-weight:600;background:rgba(255,178,77,0.08);padding:5px 8px;border-radius:var(--r);border:1px solid rgba(255,178,77,0.2)'
           : 'font-size:11px;color:var(--text2);margin-bottom:6px;font-style:italic';
         const subObsPrefix = subObsPending ? '⚠ ' : '';
+
+        const subEditButtons = canEditLote ? `
+          <button type="button" class="abtn" style="font-size:11px" data-lote-sub-obs="${esc(l.id)}" data-spid="${esc(spid)}">Obs.</button>
+          ${sEst!=='aprobado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="aprobado">✓</button>`:''}
+          ${sEst!=='rechazado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="rechazado">✗</button>`:''}
+          <button type="button" class="abtn" style="font-size:11px;color:var(--text3);border-color:rgba(120,120,120,0.3)" data-lote-sub-quitar="${esc(l.id)}" data-spid="${esc(spid)}" data-parent-id="${esc(pid)}" title="Quitar del lote">Borrar</button>
+        ` : '';
+
         posRowsArr.push(`<div style="${subRowStyle}">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
             <div>
@@ -3078,37 +3243,10 @@ function renderLoteDetalle(l, positions){
             <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:${sColor}">${sLabel}</span>
           </div>
           ${sObs?`<div style="${subObsStyle}">${subObsPrefix}"${esc(sObs)}"</div>`:''}
-          <div class="abtn-group">
-            <button type="button" class="abtn" style="font-size:11px" data-lote-sub-obs="${esc(l.id)}" data-spid="${esc(spid)}">Obs.</button>
-            ${sEst!=='aprobado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="aprobado">✓</button>`:''}
-            ${sEst!=='rechazado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="rechazado">✗</button>`:''}
-          </div>
+          ${subEditButtons?`<div class="abtn-group">${subEditButtons}</div>`:''}
         </div>`);
       });
     }
-  });
-  (l.subPosIds||[]).forEach(spid=>{
-    const [parentId,subId]=spid.split('::');
-    const p=positions.find(x=>x.uid===parentId)||positions.find(x=>x.id===parentId); if(!p) return;
-    const est=l.subPosEstados?.[spid]||'pendiente';
-    const estColor=est==='aprobado'?'var(--green)':est==='rechazado'?'var(--red)':'var(--text3)';
-    const estLabel=est==='aprobado'?'✓ Aprobado':est==='rechazado'?'✗ Rechazado':'Pendiente';
-    const obs=l.subPosObs?.[spid]||'';
-    posRowsArr.push(`<div style="padding:8px 14px 8px 28px;border-top:1px solid var(--border);background:var(--bg3)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
-        <div>
-          <span style="font-family:var(--mono);font-size:12px;color:var(--accent2)">↳ ${esc(subId)}</span>
-          <span style="font-size:11px;color:var(--text3);margin-left:6px">${esc(p.denom)}</span>
-        </div>
-        <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:${estColor}">${estLabel}</span>
-      </div>
-      ${obs?`<div style="font-size:11px;color:var(--text2);margin-bottom:6px;font-style:italic">"${esc(obs)}"</div>`:''}
-      <div class="abtn-group">
-        <button type="button" class="abtn" style="font-size:11px" data-lote-sub-obs="${esc(l.id)}" data-spid="${esc(spid)}">Obs.</button>
-        ${est!=='aprobado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--green);border-color:rgba(62,207,122,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="aprobado">✓</button>`:''}
-        ${est!=='rechazado'?`<button type="button" class="abtn" style="font-size:11px;color:var(--red);border-color:rgba(240,94,106,0.3)" data-lote-sub-est="${esc(l.id)}" data-spid="${esc(spid)}" data-est="rechazado">✗</button>`:''}
-      </div>
-    </div>`);
   });
 
   // historial
@@ -3249,6 +3387,175 @@ function renderLoteAsignSubModal(){
     </div>
   </div></div>`;
 }
+
+// ── PINTURA LOTE SELECTOR MODAL (Nuevo lote + Agregar piezas) ────
+function renderLoteSelectorModal(){
+  const m=state.modal; if(!m) return '';
+  const ot=activeOt(); if(!ot) return '';
+  const lote = m.loteId ? ot.lotes?.find(l=>l.id===m.loteId) : null;
+  const isNew = !lote;
+
+  // Build set of already-assigned items (so we hide them)
+  const assignedPosKeys = new Set();
+  const assignedSubSpids = new Set();
+  (ot.lotes||[]).forEach(l=>{
+    (l.posIds||[]).forEach(pid=>assignedPosKeys.add(pid));
+    (l.subPosIds||[]).forEach(spid=>assignedSubSpids.add(spid));
+  });
+
+  // selected items: array of {posKey, subId|null}
+  if(!Array.isArray(m.selected)) m.selected = [];
+  if(!m.filters) m.filters = {q:'', taller:[], prioridad:'', estado:''};
+  if(!m.expanded) m.expanded = {};
+
+  // Build list of selectable items (positions and their subs)
+  const positions = ot.positions || [];
+
+  // Filters: taller, prioridad
+  const allTalleres = [...new Set(positions.map(p=>String(p.construye||'').trim()||'CIMOMET'))].sort();
+  const allPrios = [...new Set(positions.map(p=>String(p.prioridad||'')).filter(Boolean))]
+    .sort((a,b)=>Number(a)-Number(b)||a.localeCompare(b,'es',{numeric:true}));
+
+  // Filter positions per filters and search
+  const q = (m.filters.q||'').toLowerCase().trim();
+  const filteredPositions = positions.filter(p=>{
+    const taller=String(p.construye||'').trim()||'CIMOMET';
+    if(m.filters.taller.length>0 && !m.filters.taller.includes(taller)) return false;
+    if(m.filters.prioridad && String(p.prioridad||'')!==m.filters.prioridad) return false;
+    if(q && !String(p.id||'').toLowerCase().includes(q) && !String(p.denom||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  // For each position, determine selectable items
+  // A position is "selectable as whole" if it's not in any lote AND none of its subs are in any lote
+  // Subs are selectable individually if their parent isn't whole-assigned AND the sub isn't already
+  const itemRows = [];
+  filteredPositions.forEach(p=>{
+    const posKey = p.uid || p.id;
+    const parentAssigned = assignedPosKeys.has(posKey);
+    const hasSubs = p.subs && p.subs.length>0;
+    const subsAssignedSet = new Set();
+    if(hasSubs){
+      p.subs.forEach(s=>{
+        const spid=`${posKey}::${s.subId}`;
+        if(assignedSubSpids.has(spid)) subsAssignedSet.add(s.subId);
+      });
+    }
+    const anySubAssigned = subsAssignedSet.size>0;
+    // Estados CD/AP
+    const procs = p.processes || [];
+    const cdStatus = procs[0]?.status || 'pending';
+    const apStatus = procs[1]?.status || 'pending';
+
+    // Hide entirely if all relevant items are already assigned somewhere
+    if(parentAssigned) return;
+    if(hasSubs && subsAssignedSet.size === p.subs.length) return;
+
+    const expanded = !!m.expanded[posKey];
+    const taller = String(p.construye||'').trim()||'CIMOMET';
+    const prio = p.prioridad||'—';
+
+    // Sub-level CD/AP aggregate
+    const subStatusInfo = hasSubs ? p.subs.map(s=>{
+      const subAssigned = subsAssignedSet.has(s.subId);
+      const sp = s.processes||[];
+      return {
+        subId: s.subId,
+        assigned: subAssigned,
+        cd: sp[0]?.status||'pending',
+        ap: sp[1]?.status||'pending'
+      };
+    }) : null;
+
+    // "Toda la posición" checkbox: only enabled if no subs already assigned individually
+    const canSelectWhole = !anySubAssigned;
+    const wholeSelected = m.selected.some(it=>it.posKey===posKey && it.subId===null);
+
+    const cdBadge = (s)=>{
+      const c = s==='approved'?'var(--green)':s==='rejected'?'var(--red)':'var(--text3)';
+      const t = s==='approved'?'✓':s==='rejected'?'✗':'—';
+      return `<span style="font-family:var(--mono);font-size:10px;color:${c}">${t}</span>`;
+    };
+
+    itemRows.push(`<div style="border-bottom:1px solid var(--border);padding:10px 14px">
+      <div style="display:flex;align-items:center;gap:12px;${!canSelectWhole?'opacity:0.55':''}">
+        ${canSelectWhole
+          ? `<input type="checkbox" class="lote-sel-whole" data-pos-key="${esc(posKey)}" ${wholeSelected?'checked':''} style="flex-shrink:0;width:16px;height:16px;cursor:pointer"/>`
+          : '<span style="display:inline-block;width:16px;flex-shrink:0"></span>'}
+        <div style="display:flex;flex-direction:column;min-width:90px;flex-shrink:0">
+          <span style="font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text)">${esc(p.id)}</span>
+          <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">×${p.qty||1} · P${prio}</span>
+        </div>
+        <span style="flex:1;font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.denom||'')}">${esc(p.denom||'')}</span>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--text3);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${esc(taller)}</span>
+        <div style="display:flex;gap:8px;flex-shrink:0;font-family:var(--mono);font-size:10px;color:var(--text3)">
+          <span>CD ${cdBadge(cdStatus)}</span>
+          <span>AP ${cdBadge(apStatus)}</span>
+        </div>
+        ${hasSubs ? `<button type="button" class="abtn" style="font-size:10px;padding:3px 8px;flex-shrink:0" data-lote-sel-expand="${esc(posKey)}">${expanded?'▾':'▸'} ${p.subs.length-subsAssignedSet.size}/${p.subs.length}</button>` : '<span style="width:64px;flex-shrink:0"></span>'}
+      </div>
+      ${hasSubs && expanded ? `<div style="margin-top:8px;padding-left:28px;border-left:2px solid var(--border);margin-left:8px">${subStatusInfo.filter(s=>!s.assigned).map(s=>{
+        const subSelected = m.selected.some(it=>it.posKey===posKey && it.subId===s.subId);
+        const disabledBySelected = wholeSelected;
+        return `<div style="display:flex;align-items:center;gap:12px;padding:5px 8px;${disabledBySelected?'opacity:0.5':''}">
+          <input type="checkbox" class="lote-sel-sub" data-pos-key="${esc(posKey)}" data-sub-id="${esc(s.subId)}" ${subSelected||disabledBySelected?'checked':''} ${disabledBySelected?'disabled':''} style="flex-shrink:0;width:14px;height:14px;cursor:${disabledBySelected?'default':'pointer'}"/>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--accent2);flex:1">↳ ${esc(s.subId)}</span>
+          <div style="display:flex;gap:8px;font-family:var(--mono);font-size:10px;color:var(--text3)">
+            <span>CD ${cdBadge(s.cd)}</span>
+            <span>AP ${cdBadge(s.ap)}</span>
+          </div>
+        </div>`;
+      }).join('')}</div>` : ''}
+    </div>`);
+  });
+
+  // Count selected (effective unique items)
+  let countSel = 0;
+  m.selected.forEach(it=>{
+    if(it.subId===null){
+      const p = positions.find(x=>(x.uid||x.id)===it.posKey);
+      countSel += (p?.subs?.length || 1);
+    } else {
+      countSel++;
+    }
+  });
+
+  const nameInput = isNew
+    ? `<div class="modal-field" style="margin-bottom:14px">
+        <label>Nombre del lote</label>
+        <input id="inp-lote-sel-nombre" type="text" placeholder="Ej: L-001, Capa 1, etc." value="${esc(m.loteNombre||'')}" style="width:100%"/>
+      </div>`
+    : `<div style="margin-bottom:14px;font-family:var(--mono);font-size:12px;color:var(--text2)">Agregando a lote: <strong style="color:var(--text)">${esc(lote.nombre)}</strong></div>`;
+
+  return `<div class="modal-overlay" id="modal-overlay"><div class="modal" style="max-width:780px;width:96vw">
+    <div class="modal-title">${isNew?'Nuevo lote de pintura':'Agregar piezas al lote'}</div>
+    ${nameInput}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <input type="text" id="inp-lote-sel-q" placeholder="Buscar posición o denominación…" value="${esc(m.filters.q||'')}" style="flex:1;min-width:180px;padding:8px 10px;font-size:13px"/>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+      <span style="font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;align-self:center;margin-right:4px">Taller</span>
+      <button type="button" class="fbtn ${m.filters.taller.length===0?'on':''}" data-lote-sel-taller="">Todos</button>
+      ${allTalleres.map(t=>`<button type="button" class="fbtn ${m.filters.taller.includes(t)?'on':''}" data-lote-sel-taller="${esc(t)}">${esc(t)}</button>`).join('')}
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="font-family:var(--mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;align-self:center;margin-right:4px">Prioridad</span>
+      <button type="button" class="fbtn ${!m.filters.prioridad?'on':''}" data-lote-sel-prio="">Todas</button>
+      ${allPrios.map(p=>`<button type="button" class="fbtn ${m.filters.prioridad===p?'on':''}" data-lote-sel-prio="${esc(p)}">${esc(p)}</button>`).join('')}
+    </div>
+    <div style="border:1px solid var(--border);border-radius:var(--r);max-height:50vh;overflow-y:auto;background:var(--bg2)">
+      ${itemRows.length>0 ? itemRows.join('') : '<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">No hay posiciones disponibles con los filtros actuales.</div>'}
+    </div>
+    <div class="modal-actions" style="justify-content:space-between;align-items:center">
+      <span style="font-family:var(--mono);font-size:12px;color:var(--text2)">${countSel} unidad${countSel!==1?'es':''} seleccionada${countSel!==1?'s':''}</span>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="btn-cancel" id="btn-close">Cancelar</button>
+        <button type="button" class="btn-ok" id="btn-lote-sel-confirm" ${countSel===0?'disabled style="opacity:0.5;cursor:not-allowed"':''}>${isNew?'Crear lote':'Agregar al lote'}</button>
+      </div>
+    </div>
+  </div></div>`;
+}
+
 
 // ── BIND ──────────────────────────────────────────────────
 function bind(){
@@ -3445,6 +3752,323 @@ function bind(){
     });
   });
 
+  // capas de medición — agregar nueva capa
+  document.querySelectorAll('[data-lote-capa-agregar]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const ot=activeOt(); if(!ot) return;
+      const lote=ot.lotes?.find(l=>l.id===b.dataset.loteCapaAgregar); if(!lote) return;
+      if(!Array.isArray(lote.capas)) lote.capas=[];
+      const n=lote.capas.length+1;
+      lote.capas.push({
+        id: 'capa_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
+        nombre: 'Capa '+n,
+        min: '',
+        max: '',
+        promedio: '',
+        fecha: nowStr(),
+      });
+      savePersisted(); render();
+    });
+  });
+
+  // capa — borrar
+  document.querySelectorAll('[data-lote-capa-borrar]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const ot=activeOt(); if(!ot) return;
+      const lote=ot.lotes?.find(l=>l.id===b.dataset.loteCapaBorrar); if(!lote||!Array.isArray(lote.capas)) return;
+      const capaId=b.dataset.capaId;
+      const capa=lote.capas.find(c=>c.id===capaId);
+      if(!capa) return;
+      if(!confirm(`¿Borrar "${capa.nombre||'esta capa'}"?`)) return;
+      lote.capas=lote.capas.filter(c=>c.id!==capaId);
+      savePersisted(); render();
+    });
+  });
+
+  // capa — editar valores (min/max/promedio)
+  document.querySelectorAll('.lote-capa-input').forEach(inp=>{
+    inp.addEventListener('change',()=>{
+      const ot=activeOt(); if(!ot) return;
+      const lote=ot.lotes?.find(l=>l.id===inp.dataset.loteId); if(!lote||!Array.isArray(lote.capas)) return;
+      const capa=lote.capas.find(c=>c.id===inp.dataset.capaId); if(!capa) return;
+      capa[inp.dataset.metric]=inp.value.trim();
+      // also sync legacy fields on the lote root if this is the first capa (for back-compat with home/header)
+      if(lote.capas[0]?.id===capa.id){
+        lote.min=lote.capas[0].min||'';
+        lote.max=lote.capas[0].max||'';
+        lote.promedio=lote.capas[0].promedio||'';
+      }
+      savePersisted();
+      // no render needed (input keeps focus)
+    });
+  });
+
+  // capa — editar nombre
+  document.querySelectorAll('.lote-capa-nombre').forEach(inp=>{
+    inp.addEventListener('change',()=>{
+      const ot=activeOt(); if(!ot) return;
+      const lote=ot.lotes?.find(l=>l.id===inp.dataset.loteId); if(!lote||!Array.isArray(lote.capas)) return;
+      const capa=lote.capas.find(c=>c.id===inp.dataset.capaId); if(!capa) return;
+      capa.nombre=inp.value.trim();
+      savePersisted();
+    });
+  });
+
+  // quitar posición entera del lote
+  // ── PINTURA LOTE SELECTOR (Nuevo lote + Agregar piezas) ──
+  on('btn-nuevo-lote','click',()=>{
+    state.modal={type:'lote-selector', loteId:null, selected:[], filters:{q:'',taller:[],prioridad:'',estado:''}, expanded:{}, loteNombre:''};
+    render();
+  });
+  document.querySelectorAll('[data-lote-agregar-piezas]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      state.modal={type:'lote-selector', loteId:b.dataset.loteAgregarPiezas, selected:[], filters:{q:'',taller:[],prioridad:'',estado:''}, expanded:{}, loteNombre:''};
+      render();
+    });
+  });
+  // search input
+  const loteSelQ=document.getElementById('inp-lote-sel-q');
+  if(loteSelQ){
+    loteSelQ.addEventListener('input',()=>{ if(state.modal) state.modal.filters.q=loteSelQ.value; render(); setTimeout(()=>document.getElementById('inp-lote-sel-q')?.focus(),0); });
+  }
+  // nombre input (don't re-render to keep focus; read on confirm)
+  const loteSelNombre=document.getElementById('inp-lote-sel-nombre');
+  if(loteSelNombre){
+    loteSelNombre.addEventListener('input',()=>{ if(state.modal) state.modal.loteNombre=loteSelNombre.value; });
+  }
+  // taller filter
+  document.querySelectorAll('[data-lote-sel-taller]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      if(!state.modal) return;
+      const t=b.dataset.loteSelTaller;
+      if(t===''){ state.modal.filters.taller=[]; }
+      else {
+        const arr=state.modal.filters.taller||[];
+        if(arr.includes(t)) state.modal.filters.taller=arr.filter(x=>x!==t);
+        else state.modal.filters.taller=[...arr,t];
+      }
+      render();
+    });
+  });
+  // prio filter
+  document.querySelectorAll('[data-lote-sel-prio]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      if(!state.modal) return;
+      state.modal.filters.prioridad=b.dataset.loteSelPrio;
+      render();
+    });
+  });
+  // expand
+  document.querySelectorAll('[data-lote-sel-expand]').forEach(b=>{
+    b.addEventListener('click',e=>{
+      e.preventDefault(); e.stopPropagation();
+      if(!state.modal) return;
+      const k=b.dataset.loteSelExpand;
+      state.modal.expanded[k]=!state.modal.expanded[k];
+      render();
+    });
+  });
+  // checkbox whole
+  document.querySelectorAll('.lote-sel-whole').forEach(cb=>{
+    cb.addEventListener('change',()=>{
+      if(!state.modal) return;
+      const posKey=cb.dataset.posKey;
+      // remove any prior selections for this pos (both whole and sub)
+      state.modal.selected = state.modal.selected.filter(it=>it.posKey!==posKey);
+      if(cb.checked){
+        state.modal.selected.push({posKey, subId:null});
+      }
+      render();
+    });
+  });
+  // checkbox sub
+  document.querySelectorAll('.lote-sel-sub').forEach(cb=>{
+    cb.addEventListener('change',()=>{
+      if(!state.modal) return;
+      const posKey=cb.dataset.posKey;
+      const subId=cb.dataset.subId;
+      // if there's a "whole" selection for this pos, remove it and replace with individual subs
+      const wholeIdx=state.modal.selected.findIndex(it=>it.posKey===posKey&&it.subId===null);
+      if(wholeIdx>=0){
+        // expand whole into individual subs minus the toggled one
+        const ot2=activeOt();
+        const p2=ot2?.positions.find(x=>(x.uid||x.id)===posKey);
+        state.modal.selected.splice(wholeIdx,1);
+        (p2?.subs||[]).forEach(s=>{ if(s.subId!==subId) state.modal.selected.push({posKey, subId:s.subId}); });
+        // since the toggled one is being checked, also add it (it would have been excluded above)
+        if(cb.checked) state.modal.selected.push({posKey, subId});
+      } else {
+        const idx=state.modal.selected.findIndex(it=>it.posKey===posKey&&it.subId===subId);
+        if(cb.checked){ if(idx<0) state.modal.selected.push({posKey, subId}); }
+        else { if(idx>=0) state.modal.selected.splice(idx,1); }
+      }
+      render();
+    });
+  });
+  // confirm
+  on('btn-lote-sel-confirm','click',()=>{
+    const ot=activeOt(); if(!ot) return;
+    const m=state.modal; if(!m) return;
+    if(!Array.isArray(m.selected) || m.selected.length===0){ alert('Seleccioná al menos una pieza.'); return; }
+
+    // Get lote (existing or create new)
+    let lote;
+    if(m.loteId){
+      lote=ot.lotes?.find(l=>l.id===m.loteId);
+      if(!lote){ alert('Lote no encontrado.'); return; }
+    } else {
+      const nombre=(m.loteNombre||document.getElementById('inp-lote-sel-nombre')?.value||'').trim();
+      if(!nombre){ alert('Poné un nombre al lote.'); return; }
+      if(!ot.lotes) ot.lotes=[];
+      if(ot.lotes.some(l=>l.nombre===nombre)){ alert('Ya existe un lote con ese nombre.'); return; }
+      lote={id:genId(),nombre,fecha:nowStr(),estado:'pendiente',posIds:[],subPosIds:[],historial:[],capas:[]};
+      ot.lotes.push(lote);
+    }
+
+    // Check pieces without AP approved
+    const positions=ot.positions||[];
+    const piecesWithoutAp=[];
+    m.selected.forEach(it=>{
+      const p=positions.find(x=>(x.uid||x.id)===it.posKey);
+      if(!p) return;
+      if(it.subId===null){
+        // whole position: check parent's AP, and each sub's AP if subs exist
+        const apOk=p.processes?.[1]?.status==='approved';
+        if(!apOk){
+          if(p.subs && p.subs.length>0){
+            p.subs.forEach(s=>{
+              if(s.processes?.[1]?.status!=='approved') piecesWithoutAp.push(`${p.id}-${s.subId.replace(p.id+'-','')}`);
+            });
+          } else {
+            piecesWithoutAp.push(p.id);
+          }
+        }
+      } else {
+        const sub=p.subs?.find(s=>s.subId===it.subId);
+        if(sub && sub.processes?.[1]?.status!=='approved'){
+          piecesWithoutAp.push(`${p.id}-${it.subId.replace(p.id+'-','')}`);
+        }
+      }
+    });
+    if(piecesWithoutAp.length>0){
+      const sample=piecesWithoutAp.slice(0,6).join(', ')+(piecesWithoutAp.length>6?`, … (+${piecesWithoutAp.length-6} más)`:'');
+      if(!confirm(`${piecesWithoutAp.length} pieza${piecesWithoutAp.length!==1?'s':''} no tiene${piecesWithoutAp.length!==1?'n':''} AP aprobado: ${sample}\n\n¿Querés agregarlas al lote igualmente?`)) return;
+    }
+
+    // Add items to lote
+    if(!Array.isArray(lote.posIds)) lote.posIds=[];
+    if(!Array.isArray(lote.subPosIds)) lote.subPosIds=[];
+    m.selected.forEach(it=>{
+      const p=positions.find(x=>(x.uid||x.id)===it.posKey);
+      if(!p) return;
+      const posKey=p.uid||p.id;
+      if(it.subId===null){
+        if(!lote.posIds.includes(posKey)) lote.posIds.push(posKey);
+        // mark all subs as belonging to this lote
+        p.loteId=lote.id;
+        (p.subs||[]).forEach(s=>{ s.loteId=lote.id; });
+      } else {
+        const spid=`${posKey}::${it.subId}`;
+        if(!lote.subPosIds.includes(spid)) lote.subPosIds.push(spid);
+        const sub=p.subs?.find(s=>s.subId===it.subId);
+        if(sub) sub.loteId=lote.id;
+      }
+    });
+    state.modal=null;
+    state.filters.filterLote=lote.id; // open the lote we just added to
+    savePersisted();
+    render();
+  });
+
+  document.querySelectorAll('[data-lote-pos-quitar]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const ot=activeOt(); if(!ot) return;
+      const lote=ot.lotes?.find(l=>l.id===b.dataset.lotePosQuitar); if(!lote) return;
+      const pid=b.dataset.posId;
+      const pos=ot.positions.find(p=>p.uid===pid)||ot.positions.find(p=>p.id===pid);
+      if(!confirm('¿Quitar esta posición del lote? El estado de pintura volverá a "pendiente".')) return;
+      // remove from posIds
+      if(Array.isArray(lote.posIds)) lote.posIds=lote.posIds.filter(x=>x!==pid);
+      // remove any sub of this parent in subPosIds too
+      if(Array.isArray(lote.subPosIds)) lote.subPosIds=lote.subPosIds.filter(spid=>!spid.startsWith(pid+'::'));
+      // cleanup state and obs
+      if(lote.posEstados) delete lote.posEstados[pid];
+      if(lote.posObs) delete lote.posObs[pid];
+      if(lote.subPosEstados){
+        Object.keys(lote.subPosEstados).forEach(k=>{ if(k.startsWith(pid+'::')) delete lote.subPosEstados[k]; });
+      }
+      if(lote.subPosObs){
+        Object.keys(lote.subPosObs).forEach(k=>{ if(k.startsWith(pid+'::')) delete lote.subPosObs[k]; });
+      }
+      // reset PIN status on position and subs
+      if(pos){
+        if(pos.loteId===lote.id) pos.loteId=null;
+        if(pos.processes && pos.processes[2]){
+          pos.processes[2].status='pending';
+          pos.processes[2].obs='';
+        }
+        (pos.subs||[]).forEach(s=>{
+          if(s.loteId===lote.id) s.loteId=null;
+          if(s.processes && s.processes[2]){
+            s.processes[2].status='pending';
+            s.processes[2].obs='';
+          }
+        });
+        // recompute activeProc
+        let next=0;
+        while(next<3 && pos.processes?.[next]?.status==='approved') next++;
+        pos.activeProc=next;
+      }
+      savePersisted(); render();
+    });
+  });
+
+  // quitar sub-posición del lote
+  document.querySelectorAll('[data-lote-sub-quitar]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const ot=activeOt(); if(!ot) return;
+      const lote=ot.lotes?.find(l=>l.id===b.dataset.loteSubQuitar); if(!lote) return;
+      const spid=b.dataset.spid;
+      const parentId=b.dataset.parentId;
+      const [_, subId]=spid.split('::');
+      const pos=ot.positions.find(p=>p.uid===parentId)||ot.positions.find(p=>p.id===parentId);
+      const sub=pos?.subs?.find(s=>s.subId===subId);
+      if(!confirm('¿Quitar esta sub-posición del lote? El estado de pintura volverá a "pendiente".')) return;
+
+      // CASE A: parent was assigned whole (in posIds) → "break" assignment into individual subs
+      // and exclude the one being removed
+      if(Array.isArray(lote.posIds) && lote.posIds.includes(parentId)){
+        // remove parent from posIds
+        lote.posIds=lote.posIds.filter(x=>x!==parentId);
+        // ensure subPosIds exists
+        if(!Array.isArray(lote.subPosIds)) lote.subPosIds=[];
+        // add ALL the parent's subs to subPosIds EXCEPT the one being removed
+        (pos?.subs||[]).forEach(s=>{
+          const ss=`${parentId}::${s.subId}`;
+          if(s.subId!==subId && !lote.subPosIds.includes(ss)){
+            lote.subPosIds.push(ss);
+          }
+        });
+      } else {
+        // CASE B: sub was an individual assignment in subPosIds → just remove it
+        if(Array.isArray(lote.subPosIds)) lote.subPosIds=lote.subPosIds.filter(x=>x!==spid);
+      }
+      // cleanup state and obs for this specific sub
+      if(lote.subPosEstados) delete lote.subPosEstados[spid];
+      if(lote.subPosObs) delete lote.subPosObs[spid];
+      // reset PIN status on the sub
+      if(sub){
+        if(sub.loteId===lote.id) sub.loteId=null;
+        if(sub.processes && sub.processes[2]){
+          sub.processes[2].status='pending';
+          sub.processes[2].obs='';
+        }
+      }
+      // if parent now has no subs in this lote and is empty, that's fine — kept clean
+      savePersisted(); render();
+    });
+  });
+
   // lote asignar sub-pos (calidad)
   document.querySelectorAll('[data-lote-asignar-sub]').forEach(b=>{
     b.addEventListener('click',e=>{
@@ -3467,10 +4091,29 @@ function bind(){
     if(loteNuevo){
       const existe=ot.lotes.find(l=>l.nombre===loteNuevo);
       if(existe){ loteId=existe.id; }
-      else { loteId=genId(); ot.lotes.push({id:loteId,nombre:loteNuevo,fecha:nowStr(),estado:'pendiente',posIds:[],subPosIds:[],historial:[],min:'',max:'',promedio:''}); }
+      else { loteId=genId(); ot.lotes.push({id:loteId,nombre:loteNuevo,fecha:nowStr(),estado:'pendiente',posIds:[],subPosIds:[],historial:[],capas:[]}); }
     } else { loteId=loteExistente; }
     const spid=state.modal.spid;
-    // remove from old lote
+    const parentKey=pos.uid||pos.id;
+
+    // CONFLICT: if parent position is in posIds of ANOTHER lote (or even the same), break it into individual sub assignments
+    const oldLoteWithParent = ot.lotes.find(l=>(l.posIds||[]).includes(parentKey));
+    if(oldLoteWithParent && oldLoteWithParent.id!==loteId){
+      const confirmMsg = `${pos.id}-${subId.replace(pos.id+'-','').replace(pos.id,'')} ya está en el lote "${oldLoteWithParent.nombre}" como parte de la posición ${pos.id}. ¿Querés moverla al lote nuevo? Las otras unidades quedarán en "${oldLoteWithParent.nombre}".`;
+      if(!confirm(confirmMsg)){ return; }
+      // break the parent assignment into individual subs in the old lote, except the one we're moving
+      oldLoteWithParent.posIds = oldLoteWithParent.posIds.filter(id=>id!==parentKey);
+      if(!oldLoteWithParent.subPosIds) oldLoteWithParent.subPosIds=[];
+      (pos.subs||[]).forEach(s=>{
+        const otherSpid=`${parentKey}::${s.subId}`;
+        if(s.subId!==subId && !oldLoteWithParent.subPosIds.includes(otherSpid)){
+          oldLoteWithParent.subPosIds.push(otherSpid);
+          s.loteId = oldLoteWithParent.id;
+        }
+      });
+    }
+
+    // remove from old lote (subPosIds)
     if(sub.loteId && sub.loteId!==loteId){
       const old=ot.lotes.find(l=>l.id===sub.loteId);
       if(old?.subPosIds) old.subPosIds=old.subPosIds.filter(x=>x!==spid);
@@ -3513,19 +4156,49 @@ function bind(){
     if(loteNuevo){
       const existe=ot.lotes.find(l=>l.nombre===loteNuevo);
       if(existe){ loteId=existe.id; }
-      else { loteId=genId(); ot.lotes.push({id:loteId,nombre:loteNuevo,fecha:nowStr(),estado:'pendiente',posIds:[],historial:[],min:'',max:'',promedio:''}); }
+      else { loteId=genId(); ot.lotes.push({id:loteId,nombre:loteNuevo,fecha:nowStr(),estado:'pendiente',posIds:[],subPosIds:[],historial:[],capas:[]}); }
     } else {
       loteId=loteExistente;
     }
+    const posKey=pos.uid||pos.id;
+
+    // CONFLICT: if any sub of this position is in subPosIds of ANOTHER lote, ask to move them all
+    if(pos.subs && pos.subs.length>0){
+      const conflicts=[];
+      pos.subs.forEach(s=>{
+        const spid=`${posKey}::${s.subId}`;
+        ot.lotes.forEach(l=>{
+          if(l.id===loteId) return;
+          if((l.subPosIds||[]).includes(spid)){
+            conflicts.push({sub:s, lote:l, spid});
+          }
+        });
+      });
+      if(conflicts.length>0){
+        const loteNames=[...new Set(conflicts.map(c=>c.lote.nombre))].join(', ');
+        const msg=`${conflicts.length} sub-posicion${conflicts.length!==1?'es':''} de ${pos.id} ya está${conflicts.length!==1?'n':''} en el lote "${loteNames}". ¿Querés moverlas al lote actual?`;
+        if(!confirm(msg)) return;
+        // remove from old lotes
+        conflicts.forEach(c=>{
+          c.lote.subPosIds=c.lote.subPosIds.filter(x=>x!==c.spid);
+          // cleanup state/obs in the old lote
+          if(c.lote.subPosEstados) delete c.lote.subPosEstados[c.spid];
+          if(c.lote.subPosObs) delete c.lote.subPosObs[c.spid];
+          c.sub.loteId=null;
+        });
+      }
+    }
+
     // remove from old lote if any
     if(pos.loteId && pos.loteId!==loteId){
       const oldLote=ot.lotes.find(l=>l.id===pos.loteId);
-      if(oldLote) oldLote.posIds=oldLote.posIds.filter(id=>id!==(pos.uid||pos.id));
+      if(oldLote) oldLote.posIds=oldLote.posIds.filter(id=>id!==posKey);
     }
     pos.loteId=loteId;
     const lote=ot.lotes.find(l=>l.id===loteId);
-    const posKey=pos.uid||pos.id;
     if(lote && !lote.posIds.includes(posKey)) lote.posIds.push(posKey);
+    // mark all subs as belonging to this lote
+    (pos.subs||[]).forEach(s=>{ s.loteId=loteId; });
     state.modal=null; savePersisted(); render();
   });
   on('btn-lote-quitar','click',()=>{
