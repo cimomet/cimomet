@@ -1032,12 +1032,59 @@ function renderPipeline(processes, shortNames, loteCtx){
     let tooltip = sh+': '+(proc.obs||'');
     // Override PINT (i=2) status based on lote membership and lote state
     if(i===2 && loteCtx){
-      const {lote, posId, subId, otLotes} = loteCtx;
+      const {lote, posId, subId, otLotes, posIdAlt, subIds} = loteCtx;
+      // Build candidate posIds to search by (uid + pos.id as fallback)
+      const posCandidates = [posId];
+      if(posIdAlt && posIdAlt!==posId) posCandidates.push(posIdAlt);
+
+      // SPECIAL CASE: parent position with subs but not assigned whole — aggregate from subs
+      if(!subId && subIds && subIds.length>0){
+        // check each sub's effective state
+        const subStates = subIds.map(sid=>{
+          // find lote for this specific sub
+          let sLote = (otLotes||[]).find(l=>posCandidates.some(pid=>(l.subPosIds||[]).includes(`${pid}::${sid}`)));
+          if(!sLote){
+            sLote = (otLotes||[]).find(l=>posCandidates.some(pid=>(l.posIds||[]).includes(pid)));
+          }
+          if(!sLote) return 'pendiente';
+          if(sLote.estado==='rechazado') return 'rechazado';
+          if(sLote.estado!=='aprobado') return 'pendiente';
+          // check if this sub has an explicit state (sub-level overrides parent-level)
+          for(const pid of posCandidates){
+            const spidState = sLote.subPosEstados?.[`${pid}::${sid}`];
+            if(spidState==='rechazado') return 'rechazado';
+            if(spidState==='aprobado') return 'aprobado';
+          }
+          // no explicit sub state — fall back to parent
+          for(const pid of posCandidates){
+            if(sLote.posEstados?.[pid]==='rechazado') return 'rechazado';
+            if(sLote.posEstados?.[pid]==='aprobado') return 'aprobado';
+          }
+          return 'aprobado'; // lote aprobado without explicit state
+        });
+        if(subStates.some(s=>s==='rechazado')){
+          cls='rej';
+          tooltip='PINT: alguna unidad rechazada';
+        } else if(subStates.every(s=>s==='aprobado')){
+          cls='ok';
+          tooltip='PINT: todas aprobadas';
+        } else if(subStates.some(s=>s==='aprobado')){
+          cls='wip';
+          tooltip='PINT: en proceso';
+        } else {
+          cls='';
+          tooltip='PINT: sin lote';
+        }
+        return `<div class="pdot ${cls}" title="${esc(tooltip)}">${sh}</div>`+(i<shortNames.length-1?'<span class="parrow">›</span>':'');
+      }
+
       const effectiveLote = lote || (otLotes||[]).find(l=>{
         if(subId){
-          return (l.subPosIds||[]).includes(`${posId}::${subId}`);
+          // check sub individually with any candidate, OR parent whole assignment with any candidate
+          return posCandidates.some(pid=>(l.subPosIds||[]).includes(`${pid}::${subId}`))
+              || posCandidates.some(pid=>(l.posIds||[]).includes(pid));
         } else {
-          return (l.posIds||[]).includes(posId);
+          return posCandidates.some(pid=>(l.posIds||[]).includes(pid));
         }
       });
       if(!effectiveLote){
@@ -1047,37 +1094,43 @@ function renderPipeline(processes, shortNames, loteCtx){
         cls='rej';
         tooltip=`PINT: lote ${effectiveLote.nombre} rechazado`;
       } else if(effectiveLote.estado==='aprobado'){
+        // helper to try multiple keys
+        const tryKeys = (obj, keys) => {
+          for(const k of keys){ if(obj && obj[k]!==undefined) return obj[k]; }
+          return undefined;
+        };
         // check per-position state inside the approved lote
-        let posState='aprobado'; // default to aprobado if lote is aprobado
+        let posState=null;
         let posObs='';
         if(subId){
-          const spid=`${posId}::${subId}`;
-          posState = effectiveLote.subPosEstados?.[spid] || 'aprobado';
-          posObs = effectiveLote.subPosObs?.[spid] || '';
+          const spidCandidates = posCandidates.map(pid=>`${pid}::${subId}`);
+          posState = tryKeys(effectiveLote.subPosEstados, spidCandidates) || null;
+          posObs = tryKeys(effectiveLote.subPosObs, spidCandidates) || '';
         } else {
-          // for parent position: aggregate from subs if any are tracked
           if(effectiveLote.subPosEstados){
-            // check if any sub of this pos is in lote
-            const subKeys = Object.keys(effectiveLote.subPosEstados).filter(k=>k.startsWith(posId+'::'));
+            const subKeys = Object.keys(effectiveLote.subPosEstados).filter(k=>posCandidates.some(pid=>k.startsWith(pid+'::')));
             if(subKeys.length>0){
               const states = subKeys.map(k=>effectiveLote.subPosEstados[k]);
               if(states.some(s=>s==='rechazado')) posState='rechazado';
               else if(states.every(s=>s==='aprobado')) posState='aprobado';
-              else posState='aprobado'; // pendiente subs in approved lote → still consider aprobado
+              else posState=null;
             } else {
-              posState = effectiveLote.posEstados?.[posId] || 'aprobado';
+              posState = tryKeys(effectiveLote.posEstados, posCandidates) || null;
             }
           } else {
-            posState = effectiveLote.posEstados?.[posId] || 'aprobado';
+            posState = tryKeys(effectiveLote.posEstados, posCandidates) || null;
           }
-          posObs = effectiveLote.posObs?.[posId] || '';
+          posObs = tryKeys(effectiveLote.posObs, posCandidates) || '';
         }
         if(posState==='rechazado'){
           cls='rej';
           tooltip=`PINT: posición rechazada en lote ${effectiveLote.nombre}`;
+        } else if(posState==='aprobado'){
+          cls='ok';
+          tooltip=`PINT: aprobado en lote ${effectiveLote.nombre}`;
         } else if(posObs && String(posObs).trim()){
-          cls='wip'; // amber — has observation
-          tooltip=`PINT: observación en lote ${effectiveLote.nombre} — "${posObs}"`;
+          cls='wip';
+          tooltip=`PINT: observación pendiente en lote ${effectiveLote.nombre} — "${posObs}"`;
         } else {
           cls='ok';
           tooltip=`PINT: aprobado en lote ${effectiveLote.nombre}`;
@@ -1351,21 +1404,59 @@ function renderHomeView(){
         // cal stats
         const units=[];
         positions.forEach(pos=>{
+          const posKey=pos.uid||pos.id;
           if(pos.subs&&pos.subs.length>0){
-            pos.subs.forEach(sub=>units.push(sub.processes));
+            pos.subs.forEach(sub=>units.push({processes:sub.processes, posKey, posIdAlt:pos.id, subId:sub.subId}));
           } else {
-            units.push(pos.processes);
+            units.push({processes:pos.processes, posKey, posIdAlt:pos.id, subId:null});
           }
         });
+        // helper: PINT state from lotes
+        const otLotes=o.lotes||[];
+        function pintStateHome(posKey, posIdAlt, subId){
+          const cand=[posKey];
+          if(posIdAlt && posIdAlt!==posKey) cand.push(posIdAlt);
+          let lote;
+          if(subId){
+            lote = otLotes.find(l=>cand.some(pid=>(l.subPosIds||[]).includes(`${pid}::${subId}`)));
+            if(!lote){
+              lote = otLotes.find(l=>cand.some(pid=>(l.posIds||[]).includes(pid)));
+            }
+            if(!lote) return 'pendiente';
+            if(lote.estado==='rechazado') return 'rechazado';
+            if(lote.estado!=='aprobado') return 'pendiente';
+            // sub-level state has priority over parent-level
+            for(const pid of cand){
+              const spidState = lote.subPosEstados?.[`${pid}::${subId}`];
+              if(spidState==='rechazado') return 'rechazado';
+              if(spidState==='aprobado') return 'aprobado';
+            }
+            for(const pid of cand){
+              if(lote.posEstados?.[pid]==='rechazado') return 'rechazado';
+            }
+            return 'aprobado';
+          } else {
+            lote = otLotes.find(l=>cand.some(pid=>(l.posIds||[]).includes(pid)));
+            if(!lote) return 'pendiente';
+            if(lote.estado==='rechazado') return 'rechazado';
+            if(lote.estado!=='aprobado') return 'pendiente';
+            for(const pid of cand){
+              if(lote.posEstados?.[pid]==='rechazado') return 'rechazado';
+            }
+            return 'aprobado';
+          }
+        }
         const totalUnits=units.length;
-        const cdOk=units.filter(pr=>pr[0]?.status==='approved').length;
-        const apOk=units.filter(pr=>pr[1]?.status==='approved').length;
-        const rejCount=units.filter(pr=>pr.some(p=>p.status==='rejected'||(p.history||[]).some(h=>h.action==='rejected'))).length;
+        const cdOk=units.filter(u=>u.processes[0]?.status==='approved').length;
+        const apOk=units.filter(u=>u.processes[1]?.status==='approved').length;
+        const pintOk=units.filter(u=>pintStateHome(u.posKey, u.posIdAlt, u.subId)==='aprobado').length;
+        const rejCount=units.filter(u=>u.processes.some(p=>p.status==='rejected'||(p.history||[]).some(h=>h.action==='rejected'))).length;
 
         const pctArm=totalKg>0?Math.round(armadoKg/totalKg*100):0;
         const pctSol=totalKg>0?Math.round(soldadoKg/totalKg*100):0;
         const pctCd=totalUnits>0?Math.round(cdOk/totalUnits*100):0;
         const pctAp=totalUnits>0?Math.round(apOk/totalUnits*100):0;
+        const pctPi=totalUnits>0?Math.round(pintOk/totalUnits*100):0;
 
         function miniBar(pct,color){
           return `<div style="flex:1;height:6px;background:var(--bg4);border-radius:3px;overflow:hidden">
@@ -1410,10 +1501,15 @@ function renderHomeView(){
                 ${miniBar(pctCd,'var(--green)')}
                 <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:var(--green);min-width:32px">${pctCd}%</span>
               </div>
-              <div style="display:flex;align-items:center;gap:8px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
                 <span style="font-family:var(--mono);font-size:10px;color:var(--teal);width:28px">AP</span>
                 ${miniBar(pctAp,'var(--teal)')}
                 <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:var(--teal);min-width:32px">${pctAp}%</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-family:var(--mono);font-size:10px;color:var(--accent2);width:28px">PINT</span>
+                ${miniBar(pctPi,'var(--accent2)')}
+                <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent2);min-width:32px">${pctPi}%</span>
               </div>
             </div>
           </div>
@@ -1757,24 +1853,67 @@ function renderTableroProduccion(ot){
 function renderTableroDefault(ot){
   const pi=ot.info; const positions=ot.positions||[];
 
+  // helper: compute effective PINT state for a unit (posId, subId|null)
+  // returns 'aprobado' | 'rechazado' | 'pendiente' based on lote membership
+  function pintState(posKey, posIdAlt, subId){
+    const lotes=ot.lotes||[];
+    const cand=[posKey];
+    if(posIdAlt && posIdAlt!==posKey) cand.push(posIdAlt);
+    let lote;
+    if(subId){
+      // first check if sub is assigned individually with any candidate
+      lote = lotes.find(l=>cand.some(pid=>(l.subPosIds||[]).includes(`${pid}::${subId}`)));
+      if(!lote){
+        // fallback: parent in posIds
+        lote = lotes.find(l=>cand.some(pid=>(l.posIds||[]).includes(pid)));
+      }
+      if(!lote) return 'pendiente';
+      if(lote.estado==='rechazado') return 'rechazado';
+      if(lote.estado!=='aprobado') return 'pendiente';
+      // sub-level state has priority over parent-level
+      for(const pid of cand){
+        const spidState = lote.subPosEstados?.[`${pid}::${subId}`];
+        if(spidState==='rechazado') return 'rechazado';
+        if(spidState==='aprobado') return 'aprobado';
+      }
+      // fall back to parent state
+      for(const pid of cand){
+        if(lote.posEstados?.[pid]==='rechazado') return 'rechazado';
+      }
+      return 'aprobado';
+    } else {
+      lote = lotes.find(l=>cand.some(pid=>(l.posIds||[]).includes(pid)));
+      if(!lote) return 'pendiente';
+      if(lote.estado==='rechazado') return 'rechazado';
+      if(lote.estado!=='aprobado') return 'pendiente';
+      for(const pid of cand){
+        if(lote.posEstados?.[pid]==='rechazado') return 'rechazado';
+      }
+      return 'aprobado';
+    }
+  }
+
   // build flat list of all inspectable units (sub-positions if qty>1, else position itself)
   const units=[];
   positions.forEach(pos=>{
+    const posKey=pos.uid||pos.id;
     if(pos.subs&&pos.subs.length>0){
       pos.subs.forEach((sub,i)=>{
-        units.push({label:`${pos.id}-${i+1}`, denom:pos.denom, prioridad:pos.prioridad||'—', processes:sub.processes});
+        units.push({label:`${pos.id}-${i+1}`, denom:pos.denom, prioridad:pos.prioridad||'—', processes:sub.processes, pintEstado: pintState(posKey, pos.id, sub.subId)});
       });
     } else {
-      units.push({label:pos.id, denom:pos.denom, prioridad:pos.prioridad||'—', processes:pos.processes});
+      units.push({label:pos.id, denom:pos.denom, prioridad:pos.prioridad||'—', processes:pos.processes, pintEstado: pintState(posKey, pos.id, null)});
     }
   });
 
   const total=units.length;
   const cdOk   =units.filter(u=>u.processes[0]?.status==='approved').length;
   const apOk   =units.filter(u=>u.processes[1]?.status==='approved').length;
+  const pintOk =units.filter(u=>u.pintEstado==='aprobado').length;
+  const pintRej=units.filter(u=>u.pintEstado==='rechazado').length;
   const rejUnits=units.filter(u=>u.processes.some(p=>
     p.status==='rejected' || (p.history||[]).some(h=>h.action==='rejected')
-  ));
+  ) || u.pintEstado==='rechazado');
   const totalRej=rejUnits.length;
 
   // rejected list rows
@@ -1850,7 +1989,7 @@ function renderTableroDefault(ot){
   </div>
   <div class="content">
 
-    <div class="metrics" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+    <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
       <div class="metric-card">
         <div class="metric-label">Total unidades</div>
         <div class="metric-val">${total}</div>
@@ -1862,6 +2001,10 @@ function renderTableroDefault(ot){
       <div class="metric-card">
         <div class="metric-label">AP aprobados</div>
         <div class="metric-val" style="color:var(--teal)">${apOk}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">PINT aprobados</div>
+        <div class="metric-val" style="color:var(--accent2)">${pintOk}</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Con rechazos</div>
@@ -1880,6 +2023,10 @@ function renderTableroDefault(ot){
           <div style="font-size:13px;font-weight:600;color:var(--teal);margin-bottom:8px">Apto Pintura (AP)</div>
           ${bar(apOk, total, 'var(--teal)')}
         </div>
+        <div>
+          <div style="font-size:13px;font-weight:600;color:var(--accent2);margin-bottom:8px">Pintura (PINT)</div>
+          ${bar(pintOk, total, 'var(--accent2)')}
+        </div>
       </div>
     </div>
 
@@ -1895,9 +2042,11 @@ function renderTableroDefault(ot){
           const tot=us.length;
           const cd=us.filter(u=>u.processes[0]?.status==='approved').length;
           const ap=us.filter(u=>u.processes[1]?.status==='approved').length;
-          const rej=us.filter(u=>u.processes.some(p=>p.status==='rejected'||(p.history||[]).some(h=>h.action==='rejected'))).length;
+          const pi=us.filter(u=>u.pintEstado==='aprobado').length;
+          const rej=us.filter(u=>u.processes.some(p=>p.status==='rejected'||(p.history||[]).some(h=>h.action==='rejected'))||u.pintEstado==='rechazado').length;
           const pctCd=tot>0?Math.round(cd/tot*100):0;
           const pctAp=tot>0?Math.round(ap/tot*100):0;
+          const pctPi=tot>0?Math.round(pi/tot*100):0;
           return `<div style="padding:1rem;border:1px solid var(--border);border-radius:var(--r2);margin-bottom:10px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:6px">
               <span style="font-size:14px;font-weight:600">Prioridad ${esc(prio)}</span>
@@ -1906,7 +2055,7 @@ function renderTableroDefault(ot){
                 ${rej>0?`<span class="chip chip-rejected">${rej} rechazo${rej!==1?'s':''}</span>`:''}
               </div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
               <div>
                 <div style="font-family:var(--mono);font-size:10px;color:var(--green);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">CD</div>
                 <div style="display:flex;align-items:center;gap:10px">
@@ -1923,6 +2072,15 @@ function renderTableroDefault(ot){
                     <div style="height:100%;width:${pctAp}%;background:var(--teal);border-radius:4px"></div>
                   </div>
                   <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--teal);min-width:60px">${ap}/${tot} <span style="color:var(--text3);font-weight:400">(${pctAp}%)</span></span>
+                </div>
+              </div>
+              <div>
+                <div style="font-family:var(--mono);font-size:10px;color:var(--accent2);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">PINT</div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <div style="flex:1;height:8px;background:var(--bg4);border-radius:4px;overflow:hidden">
+                    <div style="height:100%;width:${pctPi}%;background:var(--accent2);border-radius:4px"></div>
+                  </div>
+                  <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent2);min-width:60px">${pi}/${tot} <span style="color:var(--text3);font-weight:400">(${pctPi}%)</span></span>
                 </div>
               </div>
             </div>
@@ -2399,8 +2557,8 @@ function renderPosViewDefault(ot){
             status: allOk?'approved': anyRej?'rejected':'pending',
             history: anyPartial&&!allOk&&!anyRej?[{}]:[]
           };
-        }), CAL_SHORT, {posId:pos.uid||pos.id, subId:null, otLotes:ot.lotes})
-      : renderPipeline(pos.processes, CAL_SHORT, {posId:pos.uid||pos.id, subId:null, otLotes:ot.lotes});
+        }), CAL_SHORT, {posId:pos.uid||pos.id, posIdAlt:pos.id, subId:null, subIds:pos.subs.map(s=>s.subId), otLotes:ot.lotes})
+      : renderPipeline(pos.processes, CAL_SHORT, {posId:pos.uid||pos.id, posIdAlt:pos.id, subId:null, otLotes:ot.lotes});
     const mainAction = hasSubs
       ? `<div class="abtn-group">${calRowActions(pos.processes, prodKey(pos), null)}<button type="button" class="abtn" style="font-size:10px;border-color:rgba(138,122,196,0.3);color:var(--purple)" data-calapplyall="${esc(prodKey(pos))}" title="Replicar estado a todas las unidades">→ Todas</button></div>`
       : calRowActions(pos.processes, prodKey(pos), null);
@@ -2432,7 +2590,7 @@ function renderPosViewDefault(ot){
         : pos.subs;
       subRows=subsToShow.map((sub,_)=>{
         const realIdx=pos.subs.indexOf(sub);
-        const subPipeline=renderPipeline(sub.processes, CAL_SHORT, {posId:pos.uid||pos.id, subId:sub.subId, otLotes:ot.lotes});
+        const subPipeline=renderPipeline(sub.processes, CAL_SHORT, {posId:pos.uid||pos.id, posIdAlt:pos.id, subId:sub.subId, otLotes:ot.lotes});
         const subAction=calRowActions(sub.processes, prodKey(pos), realIdx);
         const subLote=ot.lotes?.find(l=>l.id===sub.loteId);
         return `<tr class="sub-row">
@@ -2518,8 +2676,8 @@ function renderPosViewDefault(ot){
                   const anyRej=subs.some(s=>s.processes[i]?.status==='rejected');
                   const anyPartial=subs.some(s=>(s.processes[i]?.history||[]).length>0);
                   return {status:allOk?'approved':anyRej?'rejected':'pending',history:anyPartial&&!allOk&&!anyRej?[{}]:[]};
-                }),CAL_SHORT,{posId:pos.uid||pos.id, subId:null, otLotes:ot.lotes})
-              : renderPipeline(pos.processes,CAL_SHORT,{posId:pos.uid||pos.id, subId:null, otLotes:ot.lotes});
+                }),CAL_SHORT,{posId:pos.uid||pos.id, posIdAlt:pos.id, subId:null, subIds:pos.subs.map(s=>s.subId), otLotes:ot.lotes})
+              : renderPipeline(pos.processes,CAL_SHORT,{posId:pos.uid||pos.id, posIdAlt:pos.id, subId:null, otLotes:ot.lotes});
             const mainAction=calRowActions(pos.processes, prodKey(pos),null);
 
             const allSubsAction = hasSubs ? `<div class="abtn-group">
@@ -2604,7 +2762,7 @@ function renderPosViewDefault(ot){
                     })()}
                   </div>
                   <div style="display:flex;justify-content:space-between;align-items:center">
-                    <div class="pipeline">${renderPipeline(sub.processes,CAL_SHORT,{posId:pos.uid||pos.id, subId:sub.subId, otLotes:ot.lotes})}</div>
+                    <div class="pipeline">${renderPipeline(sub.processes,CAL_SHORT,{posId:pos.uid||pos.id, posIdAlt:pos.id, subId:sub.subId, otLotes:ot.lotes})}</div>
                     <div class="abtn-group">${calRowActions(sub.processes, prodKey(pos),i)}</div>
                   </div>
                 </div>`;
@@ -3098,6 +3256,8 @@ function renderLoteDetalle(l, positions){
 
   const metrics = capasHtml + addCapaBtn;
 
+  const canEditLote = state.role==='calidad' || state.role==='admin';
+
   // actions
   const actions=`<div style="display:flex;gap:8px;flex-wrap:wrap;padding:10px 14px;background:var(--bg3);border-top:1px solid var(--border)">
     ${canEditLote?`<button type="button" class="abtn" style="color:var(--accent);border-color:rgba(79,142,247,0.3)" data-lote-agregar-piezas="${esc(l.id)}">+ Agregar piezas</button>`:''}
@@ -3110,8 +3270,6 @@ function renderLoteDetalle(l, positions){
   // ── BUILD position display structure ──
   // Group loose subs (from subPosIds) by their parent so they show under a single header
   // Sub-positions from subPosIds keep their parent grouping; sub-positions from posIds-entry are also grouped
-  // canEdit: only calidad/admin can edit, control/produccion can view
-  const canEditLote = state.role==='calidad' || state.role==='admin';
 
   // map parentId -> { p, viaPosIds:bool, subsInLote:[subId,...]|null }
   const groups = new Map();
