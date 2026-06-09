@@ -3130,7 +3130,13 @@ function renderPinturaView(ot){
         const isSelected=l.id===filterLote;
         const estadoColor=l.estado==='aprobado'?'var(--green)':l.estado==='rechazado'?'var(--red)':'var(--amber)';
         const estadoLabel=l.estado==='aprobado'?'Aprobado':l.estado==='rechazado'?'Rechazado':'Pendiente';
-        const hasMedidas=l.min||l.max||l.promedio;
+        // medidas: show the LATEST capa (last in array), fallback to root lote values
+        const ultimaCapa = Array.isArray(l.capas) && l.capas.length>0 ? l.capas[l.capas.length-1] : null;
+        const medMin = ultimaCapa ? ultimaCapa.min : l.min;
+        const medMax = ultimaCapa ? ultimaCapa.max : l.max;
+        const medProm = ultimaCapa ? ultimaCapa.promedio : l.promedio;
+        const medNombre = ultimaCapa ? ultimaCapa.nombre : '';
+        const hasMedidas=medMin||medMax||medProm;
         // count PENDING observations (not yet "raised")
         // pos obs: only count if the position is NOT aprobada
         // sub obs: only count if the sub is NOT aprobada
@@ -3169,7 +3175,7 @@ function renderPinturaView(ot){
                 ${rejUnits>0?`<span style="font-family:var(--mono);font-size:10px;color:var(--red)">⚠ ${rejUnits} rechazada${rejUnits!==1?'s':''}</span>`:''}
                 ${pendingObsCount>0?`<span style="font-family:var(--mono);font-size:10px;color:var(--amber);background:rgba(255,178,77,0.12);padding:2px 8px;border-radius:20px;border:1px solid rgba(255,178,77,0.3)" title="Observaciones pendientes de levantar">⚠ ${pendingObsCount} obs. pendiente${pendingObsCount!==1?'s':''}</span>`:''}
               </div>
-              <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:3px">${totalUnits} unidad${totalUnits!==1?'es':''} · ${esc(l.fecha)}${hasMedidas?` · Mín:${l.min||'—'} Máx:${l.max||'—'} Prom:${l.promedio||'—'}`:''}</div>
+              <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:3px">${totalUnits} unidad${totalUnits!==1?'es':''} · ${esc(l.fecha)}${hasMedidas?` · ${medNombre?esc(medNombre)+': ':''}Mín:${medMin||'—'} Máx:${medMax||'—'} Prom:${medProm||'—'}`:''}</div>
             </div>
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style="flex-shrink:0;margin-left:8px;transform:${isSelected?'rotate(90deg)':'rotate(0)'};transition:transform 0.2s"><path d="M7 5l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </div>
